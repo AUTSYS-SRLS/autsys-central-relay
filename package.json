@@ -1,13 +1,12 @@
 {
-  "name": "autsys-central-relay",
-  "version": "0.3.0",
+  "name": "autsys-betting-web",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": {"start": "node server.js"},
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
   }
 }
