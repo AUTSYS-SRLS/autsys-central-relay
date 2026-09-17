@@ -21,6 +21,8 @@ function sessionCookie(){
   const value=crypto.createHmac('sha256',APP_SECRET).update('AUTSYS_BETTING_SESSION').digest('base64url');
   return `autsys_betting=${value}`;
 }
+function nowISO(){return new Date().toISOString()}
+
 const pool=new Pool({
   host:process.env.PGHOST,
   port:Number(process.env.PGPORT||5432),
@@ -32,6 +34,59 @@ const pool=new Pool({
   idleTimeoutMillis:30000,
   connectionTimeoutMillis:10000,
 });
+
+function actualWithdrawn(s){
+  const hist=Array.isArray(s.Withdrawals)?s.Withdrawals.reduce((n,w)=>n+Math.max(0,Number(w?.AmountCents||0)),0):0;
+  const inferred=Math.max(0,Number(s.PersonalBalanceCents||0)+Math.max(0,Number(s.InitialCapital||0)));
+  return Math.max(hist,inferred);
+}
+function normalizeThreshold(s){
+  s.Withdrawals ||= [];
+  const tranches=Math.floor(actualWithdrawn(s)/5000);
+  s.NextWithdrawalThresholdCents=20000+tranches*5000;
+  return s;
+}
+async function normalizeCentral(){
+  const c=await pool.connect();
+  try{
+    await c.query('BEGIN');
+    const r=await c.query('SELECT data FROM betting_state WHERE id=1 FOR UPDATE');
+    if(!r.rowCount)throw new Error('Stato centrale assente');
+    const s=r.rows[0].data,before=Number(r.rows[0].data.NextWithdrawalThresholdCents||0);
+    normalizeThreshold(s);
+    if(before!==Number(s.NextWithdrawalThresholdCents)){
+      s.LastSavedAt=nowISO();
+      await c.query('UPDATE betting_state SET data=$1::jsonb,updated_at=now() WHERE id=1',[JSON.stringify(s)]);
+    }
+    await c.query('COMMIT');return s;
+  }catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
+}
+function withdrawalPlan(balance,threshold){
+  let after=Number(balance),next=Number(threshold),amount=0,tranches=0;
+  while(after>=next&&tranches<10000){amount+=5000;after-=5000;next+=5000;tranches++}
+  return {after,next,amount,tranches};
+}
+async function performWithdrawal(){
+  const c=await pool.connect();
+  try{
+    await c.query('BEGIN');
+    const r=await c.query('SELECT data FROM betting_state WHERE id=1 FOR UPDATE');
+    if(!r.rowCount)throw new Error('Stato centrale assente');
+    const s=r.rows[0].data;normalizeThreshold(s);
+    const d=s.Days?.[s.CurrentDay];if(!d)throw new Error('Giornata non trovata');
+    const before=Number(d.CurrentBalanceCents||0),plan=withdrawalPlan(before,Number(s.NextWithdrawalThresholdCents));
+    if(plan.amount<=0)throw new Error('Soglia di prelievo non ancora raggiunta');
+    s.PersonalBalanceCents=Number(s.PersonalBalanceCents||0)+plan.amount;
+    s.NextWithdrawalThresholdCents=plan.next;
+    s.Withdrawals.push({At:nowISO(),BeforeCents:before,AmountCents:plan.amount,AfterCents:plan.after,PersonalBalanceCents:s.PersonalBalanceCents,NextThresholdCents:plan.next});
+    d.CurrentBalanceCents=plan.after;d.OperationalBaseCents=plan.after;d.Mode='STANDARD';d.Stage=0;d.EmergencyCycleBase=0;
+    d.Events ||= [];d.Events.push({At:nowISO(),Kind:'WITHDRAWAL',BalanceCents:plan.after,Note:`Prelievo ${(plan.amount/100).toFixed(2)} EUR (${plan.tranches} soglie) e reset ciclo`});
+    s.LastSavedAt=nowISO();
+    await c.query('UPDATE betting_state SET data=$1::jsonb,updated_at=now() WHERE id=1',[JSON.stringify(s)]);
+    await c.query('COMMIT');return s;
+  }catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
+}
+
 async function snapshot(){
   const r=await pool.query('SELECT data FROM betting_state WHERE id=1');
   if(!r.rowCount) throw new Error('Stato centrale assente');
@@ -46,12 +101,30 @@ async function callLocal(path,method='GET',body=null){
   if(!r.ok){const e=new Error(data.error||`HTTP ${r.status}`);e.status=r.status;throw e}
   return data;
 }
+
+const originalGet=express.application.get;
+express.application.get=function(path,...handlers){
+  if(path==='/api/state'&&handlers.length){
+    const [auth,...rest]=handlers;
+    return originalGet.call(this,path,auth,async(req,res,next)=>{try{await normalizeCentral();next()}catch(e){res.status(500).json({error:e.message})}},...rest);
+  }
+  return originalGet.call(this,path,...handlers);
+};
+const originalPost=express.application.post;
+express.application.post=function(path,...handlers){
+  if(path==='/api/withdraw'&&handlers.length){
+    const [auth]=handlers;
+    return originalPost.call(this,path,auth,async(req,res)=>{try{await performWithdrawal();res.json(await callLocal('/api/state'))}catch(e){res.status(400).json({error:e.message})}});
+  }
+  return originalPost.call(this,path,...handlers);
+};
+
 function install(app){
   app.get('/api/desktop/snapshot',desktopAuth,async(req,res)=>{
-    try{await callLocal('/api/state');res.json(await snapshot())}catch(e){res.status(e.status||500).json({error:e.message})}
+    try{await normalizeCentral();await callLocal('/api/state');res.json(await snapshot())}catch(e){res.status(e.status||500).json({error:e.message})}
   });
   app.get('/api/desktop/state',desktopAuth,async(req,res)=>{
-    try{const view=await callLocal('/api/state');res.json({view,snapshot:await snapshot()})}catch(e){res.status(e.status||500).json({error:e.message})}
+    try{await normalizeCentral();const view=await callLocal('/api/state');res.json({view,snapshot:await snapshot()})}catch(e){res.status(e.status||500).json({error:e.message})}
   });
   app.get('/api/desktop/calendar',desktopAuth,async(req,res)=>{
     try{res.json(await callLocal('/api/calendar'))}catch(e){res.status(e.status||500).json({error:e.message})}
