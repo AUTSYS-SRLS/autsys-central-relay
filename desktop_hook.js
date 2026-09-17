@@ -22,6 +22,38 @@ function sessionCookie(){
   return `autsys_betting=${value}`;
 }
 function nowISO(){return new Date().toISOString()}
+function centsToIt(c){return (Number(c||0)/100).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function pctIt(v){return `${v>=0?'+':''}${Number(v||0).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2})}%`}
+function withdrawalDate(w){return String(w?.Date||w?.At||'').slice(0,10)}
+function actualWithdrawalsThrough(s,date){return (s.Withdrawals||[]).reduce((n,w)=>withdrawalDate(w)&&withdrawalDate(w)<=date?n+Number(w?.AmountCents||0):n,0)}
+function theoreticalWithdrawalsThrough(s,date){return Object.entries(s.Calendar||{}).reduce((n,[d,v])=>d<=date?n+Number(v?.TheoreticalWithdrawalCents||0):n,0)}
+function correctedDeviation(s){
+  const dates=Object.keys(s.Days||{}).filter(d=>d<String(s.CurrentDay||'')&&s.Days?.[d]?.Closed).sort();
+  const date=dates[dates.length-1]; if(!date)return null;
+  const dr=s.Days?.[date],cal=s.Calendar?.[date]; if(!dr||!cal)return null;
+  const real=Number(dr.ClosingBalanceCents||0)+actualWithdrawalsThrough(s,date);
+  const theo=Number(cal.TheoreticalTargetCents||0)+theoreticalWithdrawalsThrough(s,date);
+  const diff=real-theo,pct=theo?diff/theo*100:0;
+  return {date,diff,pct};
+}
+function correctStateView(s,view){
+  if(!view||typeof view!=='object')return view;
+  view.version='WEB 1.0.0.2';
+  const x=correctedDeviation(s);
+  if(x){view.previous_deviation_amount=centsToIt(x.diff);view.previous_deviation_percent=pctIt(x.pct)}
+  return view;
+}
+function correctCalendarView(s,payload){
+  if(!payload?.months)return payload;
+  for(const m of payload.months||[])for(const d of m.days||[]){
+    const dr=s.Days?.[d.date],cal=s.Calendar?.[d.date];
+    if(!dr?.Closed||!cal)continue;
+    const real=Number(dr.ClosingBalanceCents||0)+actualWithdrawalsThrough(s,d.date);
+    const theo=Number(cal.TheoreticalTargetCents||0)+theoreticalWithdrawalsThrough(s,d.date);
+    d.deviation_percent=pctIt(theo?(real-theo)/theo*100:0);
+  }
+  return payload;
+}
 
 const pool=new Pool({
   host:process.env.PGHOST,
@@ -78,7 +110,7 @@ async function performWithdrawal(){
     if(plan.amount<=0)throw new Error('Soglia di prelievo non ancora raggiunta');
     s.PersonalBalanceCents=Number(s.PersonalBalanceCents||0)+plan.amount;
     s.NextWithdrawalThresholdCents=plan.next;
-    s.Withdrawals.push({At:nowISO(),BeforeCents:before,AmountCents:plan.amount,AfterCents:plan.after,PersonalBalanceCents:s.PersonalBalanceCents,NextThresholdCents:plan.next});
+    s.Withdrawals.push({At:nowISO(),Date:s.CurrentDay,BeforeCents:before,AmountCents:plan.amount,AfterCents:plan.after,PersonalBalanceCents:s.PersonalBalanceCents,NextThresholdCents:plan.next});
     d.CurrentBalanceCents=plan.after;d.OperationalBaseCents=plan.after;d.Mode='STANDARD';d.Stage=0;d.EmergencyCycleBase=0;
     d.Events ||= [];d.Events.push({At:nowISO(),Kind:'WITHDRAWAL',BalanceCents:plan.after,Note:`Prelievo ${(plan.amount/100).toFixed(2)} EUR (${plan.tranches} soglie) e reset ciclo`});
     s.LastSavedAt=nowISO();
@@ -106,7 +138,23 @@ const originalGet=express.application.get;
 express.application.get=function(path,...handlers){
   if(path==='/api/state'&&handlers.length){
     const [auth,...rest]=handlers;
-    return originalGet.call(this,path,auth,async(req,res,next)=>{try{await normalizeCentral();next()}catch(e){res.status(500).json({error:e.message})}},...rest);
+    return originalGet.call(this,path,auth,async(req,res,next)=>{
+      try{
+        const s=await normalizeCentral(),send=res.json.bind(res);
+        res.json=(body)=>send(correctStateView(s,body));
+        next();
+      }catch(e){res.status(500).json({error:e.message})}
+    },...rest);
+  }
+  if(path==='/api/calendar'&&handlers.length){
+    const [auth,...rest]=handlers;
+    return originalGet.call(this,path,auth,async(req,res,next)=>{
+      try{
+        const s=await normalizeCentral(),send=res.json.bind(res);
+        res.json=(body)=>send(correctCalendarView(s,body));
+        next();
+      }catch(e){res.status(500).json({error:e.message})}
+    },...rest);
   }
   return originalGet.call(this,path,...handlers);
 };
