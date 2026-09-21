@@ -12,6 +12,7 @@ const PORT = Number(process.env.PORT || 10000);
 const APP_PASSWORD = String(process.env.APP_PASSWORD || '');
 const APP_SECRET = String(process.env.APP_SECRET || '');
 const MAINT_TOKEN = String(process.env.MAINT_TOKEN || '');
+const PAUSE_ALL_ON_BOOT = String(process.env.PAUSE_ALL_ON_BOOT || '');
 const SEED_STATE_B64 = String(process.env.SEED_STATE_B64 || '');
 const VERSION = 'WEB 1.0.0.1';
 const TZ = 'Europe/Rome';
@@ -297,4 +298,23 @@ const PERSONAL_HTML=fs.readFileSync(path.join(__dirname,'personal.html'),'utf8')
 
 await initDb();
 await initPersonalDb();
+if(PAUSE_ALL_ON_BOOT==='1'){
+  try{
+    let before=0;
+    await mutateState(x=>{
+      if(x.Paused===true && Number(x.Days?.[x.CurrentDay]?.CurrentBalanceCents||0)===0) return x;
+      const d=x.Days?.[x.CurrentDay]; if(!d) throw new Error('Giornata non trovata');
+      before=Number(d.CurrentBalanceCents||0);
+      const amount=before;
+      x.PersonalBalanceCents=Number(x.PersonalBalanceCents||0)+amount;
+      x.Withdrawals ||= [];
+      x.Withdrawals.push({At:nowISO(),Date:x.CurrentDay,BeforeCents:before,AmountCents:amount,AfterCents:0,PersonalBalanceCents:x.PersonalBalanceCents,NextThresholdCents:x.NextWithdrawalThresholdCents,Note:'Prelievo totale per spese personali; progetto sospeso'});
+      d.CurrentBalanceCents=0; d.OperationalBaseCents=0; d.Mode='STANDARD'; d.Stage=0; d.EmergencyCycleBase=0;
+      d.Events ||= []; d.Events.push({At:nowISO(),Kind:'WITHDRAWAL_ALL',BalanceCents:0,Note:'Prelievo totale per spese personali; progetto sospeso'});
+      x.Paused=true; x.PausedAt=nowISO(); x.PauseReason='Prelievo totale per spese personali'; x.PausedBalanceCents=before;
+      return x;
+    });
+    console.log('BETTING_PAUSE_APPLIED before_cents='+before);
+  }catch(e){console.error('BETTING_PAUSE_FAILED '+e.message)}
+}
 app.listen(PORT,'0.0.0.0',()=>console.log(`AUTSYS BETTING ${VERSION} online su porta ${PORT}`));
