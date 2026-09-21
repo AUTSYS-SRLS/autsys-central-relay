@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>PERSONAL</title><link rel="manifest" href="/personal-manifest.webmanifest"><meta name="theme-color" content="#111316">
+<style>
+:root{color-scheme:dark;--bg:#111316;--panel:#1a1e23;--line:#343b44;--txt:#f4f6f8;--muted:#9ea8b3;--good:#49c976;--warn:#f1bc4b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.4 system-ui,-apple-system,sans-serif}.wrap{max-width:720px;margin:auto;padding:16px}.top{display:flex;justify-content:space-between;align-items:center}.brand{font-size:24px;font-weight:900}.muted{color:var(--muted);font-size:12px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}.k{color:var(--muted);font-size:11px;text-transform:uppercase}.v{font-size:24px;font-weight:850;margin-top:4px}.mic{width:100%;margin:16px 0 10px;border:0;border-radius:22px;padding:24px;background:var(--good);color:#07140b;font-size:22px;font-weight:900}.mic.listening{background:var(--warn)}textarea{width:100%;min-height:92px;border-radius:14px;border:1px solid var(--line);background:#0f1114;color:var(--txt);padding:13px;font:16px system-ui}.send,.logout{border:0;border-radius:12px;padding:13px 16px;font-weight:800}.send{width:100%;background:#e8edf2;color:#111}.logout{background:transparent;color:var(--muted);border:1px solid var(--line)}.msg{min-height:22px;margin:8px 0}.good{color:var(--good)}.warn{color:var(--warn)}.events{margin-top:16px}.event{padding:11px 0;border-bottom:1px solid #262c32}.etype{font-weight:800}.raw{color:var(--muted)}
+</style></head>
+<body><div class="wrap">
+<div class="top"><div><div class="brand">PERSONAL</div><div id="day" class="muted"></div></div><button id="logout" class="logout">ESCI</button></div>
+<button id="mic" class="mic">🎙️ PARLA</button>
+<textarea id="text" placeholder="Oppure scrivi: “Ho fumato una sigaretta”, “Caffè con dolcificante”, “Peso 84,2 kg vestito”…"></textarea>
+<button id="send" class="send">REGISTRA</button><div id="msg" class="msg"></div>
+<div class="grid">
+ <div class="card"><div class="k">Calorie</div><div id="cal" class="v">0</div></div>
+ <div class="card"><div class="k">Trigliceridi stimati</div><div id="tri" class="v">0 g</div></div>
+ <div class="card"><div class="k">Zuccheri</div><div id="sug" class="v">0 g</div></div>
+ <div class="card"><div class="k">Grassi</div><div id="fat" class="v">0 g</div></div>
+ <div class="card"><div class="k">Caffè</div><div id="coffee" class="v">0</div></div>
+ <div class="card"><div class="k">Sigarette</div><div id="cigs" class="v">0</div></div>
+ <div class="card"><div class="k">NoSmoke</div><div id="nosmoke" class="v">0</div></div>
+ <div class="card"><div class="k">Peso</div><div id="weight" class="v">—</div></div>
+</div>
+<div id="enrich" class="msg warn"></div>
+<div class="events"><h3>Oggi</h3><div id="events"></div></div>
+<div class="muted" id="version"></div>
+</div>
+<script>
+const $=s=>document.querySelector(s);let rec=null,listening=false;
+async function api(url,opt){const r=await fetch(url,opt);const j=await r.json();if(!r.ok)throw new Error(j.error||'Errore');return j}
+function n(v,d=1){return Number(v||0).toLocaleString('it-IT',{maximumFractionDigits:d})}
+function render(s){const t=s.totals||{};$('#day').textContent=s.day;$('#cal').textContent=n(t.calories,0);$('#tri').textContent=n(t.triglycerides)+' g';$('#sug').textContent=n(t.sugars)+' g';$('#fat').textContent=n(t.fats)+' g';$('#coffee').textContent=n(t.coffees,0);$('#cigs').textContent=n(t.cigarettes,0);$('#nosmoke').textContent=n(t.nosmoke,0);$('#weight').textContent=s.weight?n(s.weight.value)+' kg':'—';$('#version').textContent=s.version;$('#enrich').textContent=t.needs_enrichment?String(t.needs_enrichment)+' evento/i alimentare/i da arricchire nella stima nutrizionale':'';$('#events').innerHTML=(s.recent||[]).map(e=>'<div class="event"><div class="etype">'+e.event_type+'</div><div>'+e.raw_text+'</div><div class="raw">'+new Date(e.occurred_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})+(e.needs_enrichment?' • stima da completare':'')+'</div></div>').join('')}
+async function load(){try{render(await api('/api/personal/summary'))}catch(e){$('#msg').textContent=e.message}}
+async function send(){const text=$('#text').value.trim();if(!text)return;try{$('#msg').textContent='Registro…';const r=await api('/api/personal/say',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});$('#text').value='';$('#msg').textContent='Registrato';$('#msg').className='msg good';render(r.summary)}catch(e){$('#msg').textContent=e.message;$('#msg').className='msg warn'}}
+$('#send').onclick=send;$('#logout').onclick=async()=>{await fetch('/logout',{method:'POST'});location.href='/login'};
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(SR){rec=new SR();rec.lang='it-IT';rec.interimResults=false;rec.continuous=false;rec.onresult=e=>{$('#text').value=e.results[0][0].transcript;send()};rec.onend=()=>{listening=false;$('#mic').classList.remove('listening');$('#mic').textContent='🎙️ PARLA'};rec.onerror=e=>{$('#msg').textContent='Voce non disponibile: '+e.error}}
+else{$('#mic').textContent='🎙️ DETTATURA NON DISPONIBILE';$('#mic').disabled=true}
+$('#mic').onclick=()=>{if(!rec)return;if(!listening){listening=true;$('#mic').classList.add('listening');$('#mic').textContent='ASCOLTO…';rec.start()}else rec.stop()};
+load();
+</script></body></html>
