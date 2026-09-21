@@ -143,7 +143,7 @@ async function seedPersonal20260921(){
         details,is_estimated,needs_enrichment
       )
       SELECT $1::timestamptz,'2026-09-21'::date,$2,$3,1,'evento',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-             jsonb_build_object('migration_key',$14,'source','DIETA.db','coffees_inside',$15),true,false
+             jsonb_build_object('migration_key',$14::text,'source','DIETA.db','coffees_inside',$15::int),true,false
       WHERE NOT EXISTS (
         SELECT 1 FROM personal_events WHERE details->>'migration_key'=$14::text
       )
