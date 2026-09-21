@@ -149,6 +149,20 @@ async function seedPersonal20260921(){
       )
     `,[at,type,raw,cal,prot,carb,sug,fat,sat,fiber,sodium,alcohol,trig,key,coffeesInside]);
   }
+  await pool.query(`
+    INSERT INTO personal_events(occurred_at,local_day,event_type,raw_text,quantity_value,quantity_unit,details,is_estimated,needs_enrichment)
+    SELECT '2026-09-21T23:59:00+02:00'::timestamptz,'2026-09-21'::date,'CIGARETTE',
+           'Totale giornaliero sigarette comunicato a posteriori',40,'sigarette',
+           jsonb_build_object('migration_key','local-20260921-cigarettes','source','manual_daily_total','timing','orari individuali non disponibili'),false,false
+    WHERE NOT EXISTS (SELECT 1 FROM personal_events WHERE details->>'migration_key'='local-20260921-cigarettes')
+  `);
+  await pool.query(`
+    INSERT INTO personal_events(occurred_at,local_day,event_type,raw_text,quantity_value,quantity_unit,details,is_estimated,needs_enrichment)
+    SELECT '2026-09-21T21:00:00+02:00'::timestamptz,'2026-09-21'::date,'WEIGHT',
+           'Peso vestito 105 kg; riferimento 102 kg con correzione -3 kg',102,'kg',
+           jsonb_build_object('migration_key','local-20260921-weight','measured_dressed_kg',105,'reference_adjustment_kg',-3,'conditions','vestito'),false,false
+    WHERE NOT EXISTS (SELECT 1 FROM personal_events WHERE details->>'migration_key'='local-20260921-weight')
+  `);
 }
 
 const personalWords={una:1,uno:1,un:1,due:2,tre:3,quattro:4,cinque:5,sei:6,sette:7,otto:8,nove:9,dieci:10};
