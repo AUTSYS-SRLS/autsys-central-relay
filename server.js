@@ -11,6 +11,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 10000);
 const APP_PASSWORD = String(process.env.APP_PASSWORD || '');
 const APP_SECRET = String(process.env.APP_SECRET || '');
+const MAINT_TOKEN = String(process.env.MAINT_TOKEN || '');
 const SEED_STATE_B64 = String(process.env.SEED_STATE_B64 || '');
 const VERSION = 'WEB 1.0.0.1';
 const TZ = 'Europe/Rome';
@@ -188,6 +189,27 @@ app.get('/health',async(req,res)=>{try{await pool.query('SELECT 1');res.json({ok
 app.get('/login',(req,res)=>res.send(loginPage()));
 app.post('/login',(req,res)=>{if(!safeEqual(req.body.password||'',APP_PASSWORD))return res.status(401).send(loginPage('Password non corretta'));res.cookie('autsys_betting',sessionToken(),{httpOnly:true,secure:true,sameSite:'strict',maxAge:30*24*3600*1000});res.redirect('/')});
 app.post('/logout',(req,res)=>{res.clearCookie('autsys_betting');res.redirect('/login')});
+app.post('/api/maintenance/pause-and-withdraw-all',async(req,res)=>{
+  const h=String(req.get('authorization')||'');
+  const token=h.startsWith('Bearer ')?h.slice(7).trim():'';
+  if(!MAINT_TOKEN || !safeEqual(token,MAINT_TOKEN)) return res.status(401).json({error:'Non autorizzato'});
+  try{
+    let before=0;
+    const s=await mutateState(x=>{
+      const d=x.Days?.[x.CurrentDay]; if(!d) throw new Error('Giornata non trovata');
+      before=Number(d.CurrentBalanceCents||0);
+      const amount=before;
+      x.PersonalBalanceCents=Number(x.PersonalBalanceCents||0)+amount;
+      x.Withdrawals ||= [];
+      x.Withdrawals.push({At:nowISO(),Date:x.CurrentDay,BeforeCents:before,AmountCents:amount,AfterCents:0,PersonalBalanceCents:x.PersonalBalanceCents,NextThresholdCents:x.NextWithdrawalThresholdCents,Note:'Prelievo totale per spese personali; progetto sospeso'});
+      d.CurrentBalanceCents=0; d.OperationalBaseCents=0; d.Mode='STANDARD'; d.Stage=0; d.EmergencyCycleBase=0;
+      d.Events ||= []; d.Events.push({At:nowISO(),Kind:'WITHDRAWAL_ALL',BalanceCents:0,Note:'Prelievo totale per spese personali; progetto sospeso'});
+      x.Paused=true; x.PausedAt=nowISO(); x.PauseReason='Prelievo totale per spese personali'; x.PausedBalanceCents=before;
+      return x;
+    });
+    res.json({ok:true,before_cents:before,after_cents:0,paused:!!s.Paused,paused_at:s.PausedAt});
+  }catch(e){res.status(400).json({error:e.message})}
+});
 app.get('/',(req,res)=>{if(!authed(req))return res.redirect('/login');res.send(INDEX_HTML)});
 app.get('/manifest.webmanifest',(req,res)=>res.type('application/manifest+json').send(JSON.stringify({name:'AUTSYS BETTING',short_name:'BETTING',start_url:'/',display:'standalone',background_color:'#111316',theme_color:'#111316'})));
 app.get('/api/state',requireAuth,async(req,res)=>{try{const s=await mutateState(x=>{ensureCalendar(x);return x});res.json(stateView(s))}catch(e){res.status(500).json({error:e.message})}});
