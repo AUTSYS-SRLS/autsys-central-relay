@@ -123,6 +123,34 @@ async function initPersonalDb(){
     CREATE INDEX IF NOT EXISTS idx_personal_events_type ON personal_events(event_type);
   `);
 }
+
+async function seedPersonal20260921(){
+  const rows=[
+    ['2026-09-21T07:00:00+02:00','COFFEE','Caffe con un cucchiaino di zucchero',22,.3,5,5,0,0,0,0,0,0,'local-20260921-1',0],
+    ['2026-09-21T08:00:00+02:00','COFFEE','Caffe con dolcificante',2,.3,0,0,0,0,0,0,0,0,'local-20260921-2',0],
+    ['2026-09-21T09:30:00+02:00','COFFEE','Caffe con dolcificante',2,.3,0,0,0,0,0,0,0,0,'local-20260921-3',0],
+    ['2026-09-21T14:44:00+02:00','FOOD',"Pranzo: 5 pomodori, 2 spicchi d'aglio, molto basilico, olio, sale, aceto di vino. Poi caffe con dolcificante.",216,6.5,26.4,16.2,11.3,1.6,7.8,427,0,10.17,'local-20260921-4',1],
+    ['2026-09-21T15:25:00+02:00','COFFEE','Caffe con dolcificante',2,.3,0,0,0,0,0,0,0,0,'local-20260921-5',0],
+    ['2026-09-21T21:05:00+02:00','FOOD',"Cena: insalata Trentina Bonduelle con un po di olio, sale e aceto di vino; una crocchetta di patate; un'orata al forno; caffe con dolcificante. Poi broccoli con un filo d'olio, aglio e un'acciughina.",662,57.7,35.1,8.1,32.9,6.0,12.1,1237,0,29.61,'local-20260921-6',1]
+  ];
+  for(const r of rows){
+    const [at,type,raw,cal,prot,carb,sug,fat,sat,fiber,sodium,alcohol,trig,key,coffeesInside]=r;
+    await pool.query(`
+      INSERT INTO personal_events(
+        occurred_at,local_day,event_type,raw_text,quantity_value,quantity_unit,
+        calories_kcal,protein_g,carbohydrates_g,sugars_g,fats_g,saturated_fats_g,
+        fiber_g,sodium_mg,alcohol_g,dietary_triglycerides_estimated_g,
+        details,is_estimated,needs_enrichment
+      )
+      SELECT $1::timestamptz,'2026-09-21'::date,$2,$3,1,'evento',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+             jsonb_build_object('migration_key',$14,'source','DIETA.db','coffees_inside',$15),true,false
+      WHERE NOT EXISTS (
+        SELECT 1 FROM personal_events WHERE details->>'migration_key'=$14
+      )
+    `,[at,type,raw,cal,prot,carb,sug,fat,sat,fiber,sodium,alcohol,trig,key,coffeesInside]);
+  }
+}
+
 const personalWords={una:1,uno:1,un:1,due:2,tre:3,quattro:4,cinque:5,sei:6,sette:7,otto:8,nove:9,dieci:10};
 function personalFirstNumber(s,f=1){const m=s.match(/\b(\d+(?:[.,]\d+)?)\b/);if(m)return Number(m[1].replace(',','.'));for(const [w,n] of Object.entries(personalWords))if(new RegExp('\\b'+w+'\\b','i').test(s))return n;return f}
 function personalTrig(e){if(e.fats_g!=null)e.dietary_triglycerides_estimated_g=Number(e.fats_g)*0.90;return e}
@@ -156,7 +184,7 @@ async function insertPersonalEvent(raw){
   return (await pool.query(q,v)).rows[0];
 }
 async function personalSummary(day=todayISO()){
-  const totals=(await pool.query(`SELECT COALESCE(SUM(calories_kcal),0)::float calories,COALESCE(SUM(protein_g),0)::float protein,COALESCE(SUM(carbohydrates_g),0)::float carbs,COALESCE(SUM(sugars_g),0)::float sugars,COALESCE(SUM(fats_g),0)::float fats,COALESCE(SUM(saturated_fats_g),0)::float saturated,COALESCE(SUM(fiber_g),0)::float fiber,COALESCE(SUM(sodium_mg),0)::float sodium,COALESCE(SUM(alcohol_g),0)::float alcohol,COALESCE(SUM(dietary_triglycerides_estimated_g),0)::float triglycerides,COUNT(*) FILTER (WHERE event_type='COFFEE')::int coffees,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='CIGARETTE'),0)::float cigarettes,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='NOSMOKE'),0)::float nosmoke,COUNT(*) FILTER (WHERE needs_enrichment)::int needs_enrichment FROM personal_events WHERE local_day=$1`,[day])).rows[0];
+  const totals=(await pool.query(`SELECT COALESCE(SUM(calories_kcal),0)::float calories,COALESCE(SUM(protein_g),0)::float protein,COALESCE(SUM(carbohydrates_g),0)::float carbs,COALESCE(SUM(sugars_g),0)::float sugars,COALESCE(SUM(fats_g),0)::float fats,COALESCE(SUM(saturated_fats_g),0)::float saturated,COALESCE(SUM(fiber_g),0)::float fiber,COALESCE(SUM(sodium_mg),0)::float sodium,COALESCE(SUM(alcohol_g),0)::float alcohol,COALESCE(SUM(dietary_triglycerides_estimated_g),0)::float triglycerides,(COUNT(*) FILTER (WHERE event_type='COFFEE') + COALESCE(SUM(CASE WHEN details ? 'coffees_inside' THEN (details->>'coffees_inside')::int ELSE 0 END),0))::int coffees,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='CIGARETTE'),0)::float cigarettes,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='NOSMOKE'),0)::float nosmoke,COUNT(*) FILTER (WHERE needs_enrichment)::int needs_enrichment FROM personal_events WHERE local_day=$1`,[day])).rows[0];
   const weight=(await pool.query(`SELECT quantity_value::float value,details FROM personal_events WHERE local_day=$1 AND event_type='WEIGHT' ORDER BY occurred_at DESC LIMIT 1`,[day])).rows[0]||null;
   const recent=(await pool.query(`SELECT id,event_type,raw_text,quantity_value,quantity_unit,occurred_at,needs_enrichment FROM personal_events WHERE local_day=$1 ORDER BY occurred_at DESC LIMIT 30`,[day])).rows;
   return {day,totals,weight,recent,version:'PERSONAL 0.1.0'};
@@ -280,4 +308,5 @@ const PERSONAL_HTML=fs.readFileSync(path.join(__dirname,'personal.html'),'utf8')
 
 await initDb();
 await initPersonalDb();
+await seedPersonal20260921();
 app.listen(PORT,'0.0.0.0',()=>console.log(`AUTSYS BETTING ${VERSION} online su porta ${PORT}`));
