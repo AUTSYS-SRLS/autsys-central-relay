@@ -94,6 +94,75 @@ async function mutateState(fn){
   try{await c.query('BEGIN');const r=await c.query('SELECT data FROM betting_state WHERE id=1 FOR UPDATE');let s=r.rows[0].data;const out=await fn(s);s=out||s;s.LastSavedAt=nowISO();await c.query('UPDATE betting_state SET data=$1::jsonb,updated_at=now() WHERE id=1',[JSON.stringify(s)]);await c.query('COMMIT');return s}catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
 }
 
+
+async function initPersonalDb(){
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS personal_events(
+      id bigserial PRIMARY KEY,
+      occurred_at timestamptz NOT NULL DEFAULT now(),
+      local_day date NOT NULL,
+      event_type text NOT NULL,
+      raw_text text NOT NULL,
+      quantity_value numeric,
+      quantity_unit text,
+      calories_kcal numeric,
+      protein_g numeric,
+      carbohydrates_g numeric,
+      sugars_g numeric,
+      fats_g numeric,
+      saturated_fats_g numeric,
+      fiber_g numeric,
+      sodium_mg numeric,
+      alcohol_g numeric,
+      dietary_triglycerides_estimated_g numeric,
+      details jsonb NOT NULL DEFAULT '{}'::jsonb,
+      is_estimated boolean NOT NULL DEFAULT true,
+      needs_enrichment boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_personal_events_day ON personal_events(local_day);
+    CREATE INDEX IF NOT EXISTS idx_personal_events_type ON personal_events(event_type);
+  `);
+}
+const personalWords={una:1,uno:1,un:1,due:2,tre:3,quattro:4,cinque:5,sei:6,sette:7,otto:8,nove:9,dieci:10};
+function personalFirstNumber(s,f=1){const m=s.match(/\b(\d+(?:[.,]\d+)?)\b/);if(m)return Number(m[1].replace(',','.'));for(const [w,n] of Object.entries(personalWords))if(new RegExp('\\b'+w+'\\b','i').test(s))return n;return f}
+function personalTrig(e){if(e.fats_g!=null)e.dietary_triglycerides_estimated_g=Number(e.fats_g)*0.90;return e}
+function parsePersonalEvent(raw){
+  const s=String(raw||'').trim(),l=s.toLowerCase();if(!s)throw new Error('Frase vuota');
+  const e={event_type:'NOTE',raw_text:s,quantity_value:null,quantity_unit:null,calories_kcal:null,protein_g:null,carbohydrates_g:null,sugars_g:null,fats_g:null,saturated_fats_g:null,fiber_g:null,sodium_mg:null,alcohol_g:null,dietary_triglycerides_estimated_g:null,details:{},is_estimated:true,needs_enrichment:false};
+  if(/sigarett|fumato|fumare/.test(l)){e.event_type='CIGARETTE';e.quantity_value=personalFirstNumber(l,1);e.quantity_unit='sigaretta';return e}
+  if(/nosmoke|spruzzino|spray/.test(l)){e.event_type='NOSMOKE';e.quantity_value=personalFirstNumber(l,1);e.quantity_unit='uso';return e}
+  const wm=l.match(/peso[^\d]*(\d+(?:[.,]\d+)?)/);if(wm){e.event_type='WEIGHT';e.quantity_value=Number(wm[1].replace(',','.'));e.quantity_unit='kg';e.details={conditions:/vestit/.test(l)?'vestito':null};return e}
+  if(/caff[eè]/.test(l)){e.event_type='COFFEE';e.quantity_value=1;e.quantity_unit='tazzina';e.calories_kcal=2;e.protein_g=.3;e.carbohydrates_g=0;e.sugars_g=0;e.fats_g=0;if(/zuccher/.test(l)){e.calories_kcal=22;e.carbohydrates_g=5;e.sugars_g=5;e.details={sugar:'1 cucchiaino stimato'}}if(/dolcificant/.test(l))e.details={sweetener:true};return personalTrig(e)}
+  e.event_type='FOOD';e.quantity_value=1;e.quantity_unit='evento';
+  let cal=0,prot=0,carb=0,sug=0,fat=0,sat=0,fib=0,sod=0,matched=false;
+  const add=(a,b,c,d,f,g,h,i)=>{cal+=a;prot+=b;carb+=c;sug+=d;fat+=f;sat+=g;fib+=h;sod+=i;matched=true};
+  if(/pomodor/.test(l)){const n=personalFirstNumber(l,1);add(22*n,1.1*n,4.8*n,3.2*n,.2*n,0,1.5*n,6*n)}
+  if(/aglio/.test(l)){const n=personalFirstNumber(l,1);add(4.5*n,.2*n,1*n,.05*n,0,0,.05*n,.5*n)}
+  if(/basilic/.test(l))add(2,.3,.3,0,.1,0,.2,0);
+  if(/olio/.test(l)){const n=/filo/.test(l)?5:10;add(9*n,0,0,0,n,1.4*(n/10),0,0)}
+  if(/aceto/.test(l))add(3,0,.1,.1,0,0,0,1);
+  if(/crocchett/.test(l)){const n=personalFirstNumber(l,1);add(110*n,2*n,15*n,1*n,5*n,1*n,1*n,180*n)}
+  if(/orata/.test(l))add(280,45,0,0,11,2.5,0,150);
+  if(/broccol/.test(l))add(85,7,13,4,1,.2,8,80);
+  if(/acciug/.test(l))add(8,1.2,0,0,.4,.1,0,370);
+  if(/insalata/.test(l))add(35,2,6,3,.5,.1,3,60);
+  e.calories_kcal=matched?cal:null;e.protein_g=matched?prot:null;e.carbohydrates_g=matched?carb:null;e.sugars_g=matched?sug:null;e.fats_g=matched?fat:null;e.saturated_fats_g=matched?sat:null;e.fiber_g=matched?fib:null;e.sodium_mg=matched?sod:null;e.alcohol_g=0;e.needs_enrichment=!matched;e.details={parser:'local_v1',matched};return personalTrig(e)
+}
+async function insertPersonalEvent(raw){
+  const e=parsePersonalEvent(raw);
+  const q=`INSERT INTO personal_events(local_day,event_type,raw_text,quantity_value,quantity_unit,calories_kcal,protein_g,carbohydrates_g,sugars_g,fats_g,saturated_fats_g,fiber_g,sodium_mg,alcohol_g,dietary_triglycerides_estimated_g,details,is_estimated,needs_enrichment)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18) RETURNING *`;
+  const v=[todayISO(),e.event_type,e.raw_text,e.quantity_value,e.quantity_unit,e.calories_kcal,e.protein_g,e.carbohydrates_g,e.sugars_g,e.fats_g,e.saturated_fats_g,e.fiber_g,e.sodium_mg,e.alcohol_g,e.dietary_triglycerides_estimated_g,JSON.stringify(e.details),e.is_estimated,e.needs_enrichment];
+  return (await pool.query(q,v)).rows[0];
+}
+async function personalSummary(day=todayISO()){
+  const totals=(await pool.query(`SELECT COALESCE(SUM(calories_kcal),0)::float calories,COALESCE(SUM(protein_g),0)::float protein,COALESCE(SUM(carbohydrates_g),0)::float carbs,COALESCE(SUM(sugars_g),0)::float sugars,COALESCE(SUM(fats_g),0)::float fats,COALESCE(SUM(saturated_fats_g),0)::float saturated,COALESCE(SUM(fiber_g),0)::float fiber,COALESCE(SUM(sodium_mg),0)::float sodium,COALESCE(SUM(alcohol_g),0)::float alcohol,COALESCE(SUM(dietary_triglycerides_estimated_g),0)::float triglycerides,COUNT(*) FILTER (WHERE event_type='COFFEE')::int coffees,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='CIGARETTE'),0)::float cigarettes,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='NOSMOKE'),0)::float nosmoke,COUNT(*) FILTER (WHERE needs_enrichment)::int needs_enrichment FROM personal_events WHERE local_day=$1`,[day])).rows[0];
+  const weight=(await pool.query(`SELECT quantity_value::float value,details FROM personal_events WHERE local_day=$1 AND event_type='WEIGHT' ORDER BY occurred_at DESC LIMIT 1`,[day])).rows[0]||null;
+  const recent=(await pool.query(`SELECT id,event_type,raw_text,quantity_value,quantity_unit,occurred_at,needs_enrichment FROM personal_events WHERE local_day=$1 ORDER BY occurred_at DESC LIMIT 30`,[day])).rows;
+  return {day,totals,weight,recent,version:'PERSONAL 0.1.0'};
+}
+
 function calendarWithdrawalCount(s){return Object.values(s.Calendar||{}).filter(x=>Number(x.TheoreticalWithdrawalCents||0)>0).length}
 function extendCalendar(s,through){
   s.Calendar ||= {};
@@ -212,6 +281,10 @@ app.post('/api/maintenance/pause-and-withdraw-all',async(req,res)=>{
 });
 app.get('/',(req,res)=>{if(!authed(req))return res.redirect('/login');res.send(INDEX_HTML)});
 app.get('/manifest.webmanifest',(req,res)=>res.type('application/manifest+json').send(JSON.stringify({name:'AUTSYS BETTING',short_name:'BETTING',start_url:'/',display:'standalone',background_color:'#111316',theme_color:'#111316'})));
+app.get('/personal',(req,res)=>{if(!authed(req))return res.redirect('/login');res.send(PERSONAL_HTML)});
+app.get('/personal-manifest.webmanifest',(req,res)=>res.type('application/manifest+json').send(JSON.stringify({name:'Guido Autelli - Personal',short_name:'PERSONAL',start_url:'/personal',display:'standalone',background_color:'#111316',theme_color:'#111316'})));
+app.get('/api/personal/summary',requireAuth,async(req,res)=>{try{res.json(await personalSummary(String(req.query.day||todayISO())))}catch(e){res.status(500).json({error:e.message})}});
+app.post('/api/personal/say',requireAuth,async(req,res)=>{try{const event=await insertPersonalEvent(String(req.body.text||''));res.json({ok:true,event,summary:await personalSummary()})}catch(e){res.status(400).json({error:e.message})}});
 app.get('/api/state',requireAuth,async(req,res)=>{try{const s=await mutateState(x=>{ensureCalendar(x);return x});res.json(stateView(s))}catch(e){res.status(500).json({error:e.message})}});
 app.get('/api/calendar',requireAuth,async(req,res)=>{try{const s=await readState();ensureCalendar(s);const today=todayISO();const [cy,cm]=today.split('-').map(Number);const months=[];const names=['GENNAIO','FEBBRAIO','MARZO','APRILE','MAGGIO','GIUGNO','LUGLIO','AGOSTO','SETTEMBRE','OTTOBRE','NOVEMBRE','DICEMBRE'];for(let off=0;off<2;off++){const dt=new Date(Date.UTC(cy,cm-1+off,1));const y=dt.getUTCFullYear(),m=dt.getUTCMonth()+1,days=new Date(Date.UTC(y,m,0)).getUTCDate(),arr=[];for(let day=1;day<=days;day++){const date=`${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`,cal=s.Calendar?.[date],dr=s.Days?.[date];let dev='';if(cal&&dr?.Closed){const diff=Number(dr.ClosingBalanceCents)-Number(cal.TheoreticalTargetCents);dev=pctIt(diff/Number(cal.TheoreticalTargetCents)*100)}arr.push({day,date,has_value:!!cal,is_today:date===today,is_start_date:date===s.StartDate,start:cal?centsToIt(cal.TheoreticalStartCents):'',target:cal?centsToIt(cal.TheoreticalTargetCents):'',withdrawal:cal?.TheoreticalWithdrawalCents?centsToIt(cal.TheoreticalWithdrawalCents):'',real_close:dr?.Closed?centsToIt(dr.ClosingBalanceCents):'',deviation_percent:dev})}months.push({year:y,month:m,name:`${names[m-1]} ${y}`,days:arr})}res.json({months})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/event',requireAuth,async(req,res)=>{try{const kind=String(req.body.kind||'').toUpperCase();if(!['TARGET','LOSS'].includes(kind))throw new Error('Evento non valido');const bal=parseCents(req.body.balance);const s=await mutateState(x=>{const d=x.Days?.[x.CurrentDay];if(!d)throw new Error('Giornata non trovata');if(kind==='TARGET')applyTarget(x,d,bal);else applyLoss(x,d,bal);return x});res.json(stateView(s))}catch(e){res.status(400).json({error:e.message})}});
@@ -220,6 +293,8 @@ app.post('/api/withdraw',requireAuth,async(req,res)=>{try{const s=await mutateSt
 
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML=fs.readFileSync(path.join(__dirname,'index.html'),'utf8');
+const PERSONAL_HTML=fs.readFileSync(path.join(__dirname,'personal.html'),'utf8');
 
 await initDb();
+await initPersonalDb();
 app.listen(PORT,'0.0.0.0',()=>console.log(`AUTSYS BETTING ${VERSION} online su porta ${PORT}`));
