@@ -121,6 +121,10 @@ async function initPersonalDb(){
     );
     CREATE INDEX IF NOT EXISTS idx_personal_events_day ON personal_events(local_day);
     CREATE INDEX IF NOT EXISTS idx_personal_events_type ON personal_events(event_type);
+    CREATE TABLE IF NOT EXISTS personal_migrations(
+      migration_key text PRIMARY KEY,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    );
   `);
 }
 
@@ -170,12 +174,33 @@ function personalFirstNumber(s,f=1){const m=s.match(/\b(\d+(?:[.,]\d+)?)\b/);if(
 function personalTrig(e){if(e.fats_g!=null)e.dietary_triglycerides_estimated_g=Number(e.fats_g)*0.90;return e}
 function parsePersonalEvent(raw){
   const s=String(raw||'').trim(),l=s.toLowerCase();if(!s)throw new Error('Frase vuota');
-  const e={event_type:'NOTE',raw_text:s,quantity_value:null,quantity_unit:null,calories_kcal:null,protein_g:null,carbohydrates_g:null,sugars_g:null,fats_g:null,saturated_fats_g:null,fiber_g:null,sodium_mg:null,alcohol_g:null,dietary_triglycerides_estimated_g:null,details:{},is_estimated:true,needs_enrichment:false};
-  if(/sigarett|fumato|fumare/.test(l)){e.event_type='CIGARETTE';e.quantity_value=personalFirstNumber(l,1);e.quantity_unit='sigaretta';return e}
-  if(/nosmoke|spruzzino|spray/.test(l)){e.event_type='NOSMOKE';e.quantity_value=personalFirstNumber(l,1);e.quantity_unit='uso';return e}
-  const wm=l.match(/peso[^\d]*(\d+(?:[.,]\d+)?)/);if(wm){e.event_type='WEIGHT';e.quantity_value=Number(wm[1].replace(',','.'));e.quantity_unit='kg';e.details={conditions:/vestit/.test(l)?'vestito':null};return e}
-  if(/caff[eè]/.test(l)){e.event_type='COFFEE';e.quantity_value=1;e.quantity_unit='tazzina';e.calories_kcal=2;e.protein_g=.3;e.carbohydrates_g=0;e.sugars_g=0;e.fats_g=0;if(/zuccher/.test(l)){e.calories_kcal=22;e.carbohydrates_g=5;e.sugars_g=5;e.details={sugar:'1 cucchiaino stimato'}}if(/dolcificant/.test(l))e.details={sweetener:true};return personalTrig(e)}
-  e.event_type='FOOD';e.quantity_value=1;e.quantity_unit='evento';
+  const e={event_type:'NOTE',raw_text:s,quantity_value:null,quantity_unit:null,calories_kcal:null,protein_g:null,carbohydrates_g:null,sugars_g:null,fats_g:null,saturated_fats_g:null,fiber_g:null,sodium_mg:null,alcohol_g:null,dietary_triglycerides_estimated_g:null,details:{},is_estimated:false,needs_enrichment:false};
+
+  // Personal intents with highest priority.
+  if(/\bno\s*smoke\b|\bnosmoke\b|spruzz(?:o|ino)|spray/.test(l)){
+    e.event_type='NOSMOKE';e.quantity_value=personalFirstNumber(l,1);e.quantity_unit='uso';e.details={product:'NoSmoke'};return e;
+  }
+  if(/sigarett|\bfumat[oa]\b|\bfumare\b/.test(l)){
+    e.event_type='CIGARETTE';e.quantity_value=personalFirstNumber(l,1);e.quantity_unit='sigaretta';return e;
+  }
+
+  const wm=l.match(/peso[^\d]*(\d+(?:[.,]\d+)?)/);
+  if(wm){
+    const measured=Number(wm[1].replace(',','.')),dressed=/vestit/.test(l);
+    e.event_type='WEIGHT';e.quantity_value=dressed?Math.max(0,measured-3):measured;e.quantity_unit='kg';
+    e.details=dressed?{conditions:'vestito',measured_dressed_kg:measured,reference_adjustment_kg:-3}:{conditions:null};
+    return e;
+  }
+
+  if(/caff[eè]/.test(l)){
+    const q=personalFirstNumber(l,1);
+    e.event_type='COFFEE';e.quantity_value=q;e.quantity_unit='tazzina';e.is_estimated=true;
+    e.calories_kcal=2*q;e.protein_g=.3*q;e.carbohydrates_g=0;e.sugars_g=0;e.fats_g=0;
+    if(/zuccher/.test(l)){e.calories_kcal=22*q;e.carbohydrates_g=5*q;e.sugars_g=5*q;e.details={sugar:'1 cucchiaino stimato per caffe'}}
+    if(/dolcificant/.test(l))e.details={sweetener:true};
+    return personalTrig(e);
+  }
+
   let cal=0,prot=0,carb=0,sug=0,fat=0,sat=0,fib=0,sod=0,matched=false;
   const add=(a,b,c,d,f,g,h,i)=>{cal+=a;prot+=b;carb+=c;sug+=d;fat+=f;sat+=g;fib+=h;sod+=i;matched=true};
   if(/pomodor/.test(l)){const n=personalFirstNumber(l,1);add(22*n,1.1*n,4.8*n,3.2*n,.2*n,0,1.5*n,6*n)}
@@ -188,7 +213,18 @@ function parsePersonalEvent(raw){
   if(/broccol/.test(l))add(85,7,13,4,1,.2,8,80);
   if(/acciug/.test(l))add(8,1.2,0,0,.4,.1,0,370);
   if(/insalata/.test(l))add(35,2,6,3,.5,.1,3,60);
-  e.calories_kcal=matched?cal:null;e.protein_g=matched?prot:null;e.carbohydrates_g=matched?carb:null;e.sugars_g=matched?sug:null;e.fats_g=matched?fat:null;e.saturated_fats_g=matched?sat:null;e.fiber_g=matched?fib:null;e.sodium_mg=matched?sod:null;e.alcohol_g=0;e.needs_enrichment=!matched;e.details={parser:'local_v1',matched};return personalTrig(e)
+
+  // Unknown text must never become FOOD automatically.
+  if(!matched){
+    e.event_type='NOTE';e.quantity_value=1;e.quantity_unit='evento';
+    e.details={parser:'personal_v2',classified:false};
+    return e;
+  }
+
+  e.event_type='FOOD';e.quantity_value=1;e.quantity_unit='evento';e.is_estimated=true;
+  e.calories_kcal=cal;e.protein_g=prot;e.carbohydrates_g=carb;e.sugars_g=sug;e.fats_g=fat;e.saturated_fats_g=sat;e.fiber_g=fib;e.sodium_mg=sod;e.alcohol_g=0;
+  e.details={parser:'personal_v2',matched:true};
+  return personalTrig(e);
 }
 async function insertPersonalEvent(raw){
   const e=parsePersonalEvent(raw);
@@ -197,11 +233,62 @@ async function insertPersonalEvent(raw){
   const v=[todayISO(),e.event_type,e.raw_text,e.quantity_value,e.quantity_unit,e.calories_kcal,e.protein_g,e.carbohydrates_g,e.sugars_g,e.fats_g,e.saturated_fats_g,e.fiber_g,e.sodium_mg,e.alcohol_g,e.dietary_triglycerides_estimated_g,JSON.stringify(e.details),e.is_estimated,e.needs_enrichment];
   return (await pool.query(q,v)).rows[0];
 }
+async function replacePersonalEvent(id,raw){
+  const current=(await pool.query('SELECT local_day FROM personal_events WHERE id=$1',[id])).rows[0];
+  if(!current)throw new Error('Evento non trovato');
+  const e=parsePersonalEvent(raw);
+  const q=`UPDATE personal_events SET
+    event_type=$2,raw_text=$3,quantity_value=$4,quantity_unit=$5,
+    calories_kcal=$6,protein_g=$7,carbohydrates_g=$8,sugars_g=$9,fats_g=$10,saturated_fats_g=$11,
+    fiber_g=$12,sodium_mg=$13,alcohol_g=$14,dietary_triglycerides_estimated_g=$15,
+    details=$16::jsonb,is_estimated=$17,needs_enrichment=$18
+    WHERE id=$1 RETURNING *`;
+  const v=[id,e.event_type,e.raw_text,e.quantity_value,e.quantity_unit,e.calories_kcal,e.protein_g,e.carbohydrates_g,e.sugars_g,e.fats_g,e.saturated_fats_g,e.fiber_g,e.sodium_mg,e.alcohol_g,e.dietary_triglycerides_estimated_g,JSON.stringify({...e.details,edited:true}),e.is_estimated,e.needs_enrichment];
+  return (await pool.query(q,v)).rows[0];
+}
+async function deletePersonalEvent(id){
+  const r=await pool.query('DELETE FROM personal_events WHERE id=$1 RETURNING local_day::text AS day',[id]);
+  if(!r.rowCount)throw new Error('Evento non trovato');
+  return r.rows[0].day;
+}
+
 async function personalSummary(day=todayISO()){
   const totals=(await pool.query(`SELECT COALESCE(SUM(calories_kcal),0)::float calories,COALESCE(SUM(protein_g),0)::float protein,COALESCE(SUM(carbohydrates_g),0)::float carbs,COALESCE(SUM(sugars_g),0)::float sugars,COALESCE(SUM(fats_g),0)::float fats,COALESCE(SUM(saturated_fats_g),0)::float saturated,COALESCE(SUM(fiber_g),0)::float fiber,COALESCE(SUM(sodium_mg),0)::float sodium,COALESCE(SUM(alcohol_g),0)::float alcohol,COALESCE(SUM(dietary_triglycerides_estimated_g),0)::float triglycerides,(COUNT(*) FILTER (WHERE event_type='COFFEE') + COALESCE(SUM(CASE WHEN details ? 'coffees_inside' THEN (details->>'coffees_inside')::int ELSE 0 END),0))::int coffees,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='CIGARETTE'),0)::float cigarettes,COALESCE(SUM(quantity_value) FILTER (WHERE event_type='NOSMOKE'),0)::float nosmoke,COUNT(*) FILTER (WHERE needs_enrichment)::int needs_enrichment FROM personal_events WHERE local_day=$1`,[day])).rows[0];
   const weight=(await pool.query(`SELECT quantity_value::float value,details FROM personal_events WHERE local_day=$1 AND event_type='WEIGHT' ORDER BY occurred_at DESC LIMIT 1`,[day])).rows[0]||null;
   const recent=(await pool.query(`SELECT id,event_type,raw_text,quantity_value,quantity_unit,occurred_at,needs_enrichment FROM personal_events WHERE local_day=$1 ORDER BY occurred_at DESC LIMIT 30`,[day])).rows;
-  return {day,totals,weight,recent,version:'PERSONAL 0.1.0'};
+  return {day,totals,weight,recent,version:'PERSONAL 0.2.0'};
+}
+
+async function migratePersonal20260922Exact(){
+  const key='personal-20260922-exact-timeline-v1';
+  const c=await pool.connect();
+  try{
+    await c.query('BEGIN');
+    const done=await c.query('SELECT 1 FROM personal_migrations WHERE migration_key=$1 FOR UPDATE',[key]);
+    if(done.rowCount){await c.query('COMMIT');return}
+
+    // Remove only any provisional 22/09 smoking/NoSmoke rows, then write the exact user-supplied timeline.
+    await c.query(`DELETE FROM personal_events
+      WHERE local_day='2026-09-22'::date AND event_type IN ('CIGARETTE','NOSMOKE')`);
+
+    const rows=[
+      ['2026-09-22T00:05:00+02:00','CIGARETTE','Una sigaretta alle 00:05',1,'sigaretta',{}],
+      ['2026-09-22T00:15:00+02:00','NOSMOKE','Uno spruzzo di NoSmoke alle 00:15',1,'uso',{product:'NoSmoke'}],
+      ['2026-09-22T01:00:00+02:00','CIGARETTE','Una sigaretta alle 01:00',1,'sigaretta',{}],
+      ['2026-09-22T01:15:00+02:00','NOSMOKE','Uno spruzzo di NoSmoke alle 01:15',1,'uso',{product:'NoSmoke'}],
+      ['2026-09-22T01:45:00+02:00','CIGARETTE','Una sigaretta alle 01:45',1,'sigaretta',{}],
+      ['2026-09-22T07:00:00+02:00','CIGARETTE','Una sigaretta alle 07:00',1,'sigaretta',{}],
+      ['2026-09-22T07:15:00+02:00','NOSMOKE','Uno spruzzo di NoSmoke alle 07:15',1,'uso',{product:'NoSmoke'}]
+    ];
+    for(const [at,type,raw,q,unit,details] of rows){
+      await c.query(`INSERT INTO personal_events(
+        occurred_at,local_day,event_type,raw_text,quantity_value,quantity_unit,details,is_estimated,needs_enrichment
+      ) VALUES($1::timestamptz,'2026-09-22'::date,$2,$3,$4,$5,$6::jsonb,false,false)`,
+      [at,type,raw,q,unit,JSON.stringify({...details,source:'user_exact_timeline'})]);
+    }
+    await c.query('INSERT INTO personal_migrations(migration_key) VALUES($1)',[key]);
+    await c.query('COMMIT');
+  }catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
 }
 
 function calendarWithdrawalCount(s){return Object.values(s.Calendar||{}).filter(x=>Number(x.TheoreticalWithdrawalCents||0)>0).length}
@@ -307,9 +394,21 @@ app.get('/manifest.webmanifest',(req,res)=>res.type('application/manifest+json')
 app.get('/personal/login',(req,res)=>res.send(personalLoginPage()));
 app.post('/personal/login',(req,res)=>{if(!safeEqual(req.body.password||'',APP_PASSWORD))return res.status(401).send(personalLoginPage('Password non corretta'));res.cookie('autsys_betting',sessionToken(),{httpOnly:true,secure:true,sameSite:'strict',maxAge:30*24*3600*1000});res.redirect('/personal')});
 app.get('/personal',(req,res)=>{if(!authed(req))return res.redirect('/personal/login');res.send(PERSONAL_HTML)});
+app.post('/personal/logout',(req,res)=>{res.clearCookie('autsys_betting');res.redirect('/personal/login')});
 app.get('/personal-manifest.webmanifest',(req,res)=>res.type('application/manifest+json').send(JSON.stringify({name:'Guido Autelli - Personal',short_name:'PERSONAL',start_url:'/personal',display:'standalone',background_color:'#111316',theme_color:'#111316'})));
 app.get('/api/personal/summary',requireAuth,async(req,res)=>{try{res.json(await personalSummary(String(req.query.day||todayISO())))}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/personal/say',requireAuth,async(req,res)=>{try{const event=await insertPersonalEvent(String(req.body.text||''));res.json({ok:true,event,summary:await personalSummary()})}catch(e){res.status(400).json({error:e.message})}});
+app.put('/api/personal/events/:id',requireAuth,async(req,res)=>{try{
+  const id=Number(req.params.id);if(!Number.isInteger(id)||id<=0)throw new Error('ID evento non valido');
+  const event=await replacePersonalEvent(id,String(req.body.text||''));
+  res.json({ok:true,event,summary:await personalSummary(String(event.local_day).slice(0,10))});
+}catch(e){res.status(400).json({error:e.message})}});
+app.delete('/api/personal/events/:id',requireAuth,async(req,res)=>{try{
+  const id=Number(req.params.id);if(!Number.isInteger(id)||id<=0)throw new Error('ID evento non valido');
+  const day=await deletePersonalEvent(id);
+  res.json({ok:true,summary:await personalSummary(day)});
+}catch(e){res.status(400).json({error:e.message})}});
+
 app.get('/api/state',requireAuth,async(req,res)=>{try{const s=await mutateState(x=>{ensureCalendar(x);return x});res.json(stateView(s))}catch(e){res.status(500).json({error:e.message})}});
 app.get('/api/calendar',requireAuth,async(req,res)=>{try{const s=await readState();ensureCalendar(s);const today=todayISO();const [cy,cm]=today.split('-').map(Number);const months=[];const names=['GENNAIO','FEBBRAIO','MARZO','APRILE','MAGGIO','GIUGNO','LUGLIO','AGOSTO','SETTEMBRE','OTTOBRE','NOVEMBRE','DICEMBRE'];for(let off=0;off<2;off++){const dt=new Date(Date.UTC(cy,cm-1+off,1));const y=dt.getUTCFullYear(),m=dt.getUTCMonth()+1,days=new Date(Date.UTC(y,m,0)).getUTCDate(),arr=[];for(let day=1;day<=days;day++){const date=`${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}`,cal=s.Calendar?.[date],dr=s.Days?.[date];let dev='';if(cal&&dr?.Closed){const diff=Number(dr.ClosingBalanceCents)-Number(cal.TheoreticalTargetCents);dev=pctIt(diff/Number(cal.TheoreticalTargetCents)*100)}arr.push({day,date,has_value:!!cal,is_today:date===today,is_start_date:date===s.StartDate,start:cal?centsToIt(cal.TheoreticalStartCents):'',target:cal?centsToIt(cal.TheoreticalTargetCents):'',withdrawal:cal?.TheoreticalWithdrawalCents?centsToIt(cal.TheoreticalWithdrawalCents):'',real_close:dr?.Closed?centsToIt(dr.ClosingBalanceCents):'',deviation_percent:dev})}months.push({year:y,month:m,name:`${names[m-1]} ${y}`,days:arr})}res.json({months})}catch(e){res.status(500).json({error:e.message})}});
 app.post('/api/event',requireAuth,async(req,res)=>{try{const kind=String(req.body.kind||'').toUpperCase();if(!['TARGET','LOSS'].includes(kind))throw new Error('Evento non valido');const bal=parseCents(req.body.balance);const s=await mutateState(x=>{const d=x.Days?.[x.CurrentDay];if(!d)throw new Error('Giornata non trovata');if(kind==='TARGET')applyTarget(x,d,bal);else applyLoss(x,d,bal);return x});res.json(stateView(s))}catch(e){res.status(400).json({error:e.message})}});
@@ -322,5 +421,5 @@ const PERSONAL_HTML=fs.readFileSync(path.join(__dirname,'personal.html'),'utf8')
 
 await initDb();
 await initPersonalDb();
-await seedPersonal20260921();
+await migratePersonal20260922Exact();
 app.listen(PORT,'0.0.0.0',()=>console.log(`AUTSYS BETTING ${VERSION} online su porta ${PORT}`));
