@@ -3,13 +3,14 @@
 <title>PERSONAL</title><link rel="manifest" href="/personal-manifest.webmanifest"><meta name="theme-color" content="#111316">
 <style>
 :root{color-scheme:dark;--bg:#111316;--panel:#1a1e23;--line:#343b44;--txt:#f4f6f8;--muted:#9ea8b3;--good:#49c976;--warn:#f1bc4b}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.4 system-ui,-apple-system,sans-serif}.wrap{max-width:720px;margin:auto;padding:16px}.top{display:flex;justify-content:space-between;align-items:center}.brand{font-size:24px;font-weight:900}.muted{color:var(--muted);font-size:12px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}.k{color:var(--muted);font-size:11px;text-transform:uppercase}.v{font-size:24px;font-weight:850;margin-top:4px}.mic{width:100%;margin:16px 0 10px;border:0;border-radius:22px;padding:24px;background:var(--good);color:#07140b;font-size:22px;font-weight:900}.mic.listening{background:var(--warn)}textarea{width:100%;min-height:92px;border-radius:14px;border:1px solid var(--line);background:#0f1114;color:var(--txt);padding:13px;font:16px system-ui}.send,.logout{border:0;border-radius:12px;padding:13px 16px;font-weight:800}.send{width:100%;background:#e8edf2;color:#111}.logout{background:transparent;color:var(--muted);border:1px solid var(--line)}.msg{min-height:22px;margin:8px 0}.good{color:var(--good)}.warn{color:var(--warn)}.events{margin-top:16px}.event{padding:11px 0;border-bottom:1px solid #262c32}.etype{font-weight:800}.raw{color:var(--muted)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px/1.4 system-ui,-apple-system,sans-serif}.wrap{max-width:720px;margin:auto;padding:16px}.top{display:flex;justify-content:space-between;align-items:center}.brand{font-size:24px;font-weight:900}.muted{color:var(--muted);font-size:12px}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}.k{color:var(--muted);font-size:11px;text-transform:uppercase}.v{font-size:24px;font-weight:850;margin-top:4px}.mic{width:100%;margin:16px 0 10px;border:0;border-radius:22px;padding:24px;background:var(--good);color:#07140b;font-size:22px;font-weight:900}.mic.listening{background:var(--warn)}textarea{width:100%;min-height:92px;border-radius:14px;border:1px solid var(--line);background:#0f1114;color:var(--txt);padding:13px;font:16px system-ui}.send,.logout{border:0;border-radius:12px;padding:13px 16px;font-weight:800}.send{width:100%;background:#e8edf2;color:#111}.logout{background:transparent;color:var(--muted);border:1px solid var(--line)}.msg{min-height:22px;margin:8px 0}.good{color:var(--good)}.warn{color:var(--warn)}.events{margin-top:16px}.event{padding:11px 0;border-bottom:1px solid #262c32}.etype{font-weight:800}.raw{color:var(--muted)}.eventTop{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.eventActions{display:flex;gap:8px}.iconBtn{border:1px solid var(--line);background:#111316;color:var(--txt);border-radius:10px;padding:7px 9px;font-size:16px}.editHint{display:none;margin:8px 0;padding:10px;border:1px solid var(--warn);border-radius:10px;color:var(--warn)}.editHint.show{display:block}
 </style></head>
 <body><div class="wrap">
 <div class="top"><div><div class="brand">PERSONAL</div><div id="day" class="muted"></div></div><button id="logout" class="logout">ESCI</button></div>
 <button id="mic" class="mic">🎙️ PARLA</button>
-<textarea id="text" placeholder="Oppure scrivi: “Ho fumato una sigaretta”, “Caffè con dolcificante”, “Peso 84,2 kg vestito”…"></textarea>
-<button id="send" class="send">REGISTRA</button><div id="msg" class="msg"></div>
+<div id="editHint" class="editHint"></div>
+<textarea id="text" placeholder="Inserimento manuale facoltativo…"></textarea>
+<button id="send" class="send">SALVA TESTO</button><div id="msg" class="msg"></div>
 <div class="grid">
  <div class="card"><div class="k">Calorie</div><div id="cal" class="v">0</div></div>
  <div class="card"><div class="k">Trigliceridi stimati</div><div id="tri" class="v">0 g</div></div>
@@ -25,16 +26,135 @@
 <div class="muted" id="version"></div>
 </div>
 <script>
-const $=s=>document.querySelector(s);let rec=null,listening=false;
-async function api(url,opt){const r=await fetch(url,opt);const j=await r.json();if(!r.ok)throw new Error(j.error||'Errore');return j}
+const $=s=>document.querySelector(s);
+let rec=null,listening=false,editId=null,gotResult=false;
+
+async function api(url,opt){
+  const r=await fetch(url,opt);
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||'Errore');
+  return j;
+}
 function n(v,d=1){return Number(v||0).toLocaleString('it-IT',{maximumFractionDigits:d})}
-function render(s){const t=s.totals||{};$('#day').textContent=s.day;$('#cal').textContent=n(t.calories,0);$('#tri').textContent=n(t.triglycerides)+' g';$('#sug').textContent=n(t.sugars)+' g';$('#fat').textContent=n(t.fats)+' g';$('#coffee').textContent=n(t.coffees,0);$('#cigs').textContent=n(t.cigarettes,0);$('#nosmoke').textContent=n(t.nosmoke,0);$('#weight').textContent=s.weight?n(s.weight.value)+' kg':'—';$('#version').textContent=s.version;$('#enrich').textContent=t.needs_enrichment?String(t.needs_enrichment)+' evento/i alimentare/i da arricchire nella stima nutrizionale':'';$('#events').innerHTML=(s.recent||[]).map(e=>'<div class="event"><div class="etype">'+e.event_type+'</div><div>'+e.raw_text+'</div><div class="raw">'+new Date(e.occurred_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})+(e.needs_enrichment?' • stima da completare':'')+'</div></div>').join('')}
-async function load(){try{render(await api('/api/personal/summary'))}catch(e){$('#msg').textContent=e.message}}
-async function send(){const text=$('#text').value.trim();if(!text)return;try{$('#msg').textContent='Registro…';const r=await api('/api/personal/say',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});$('#text').value='';$('#msg').textContent='Registrato';$('#msg').className='msg good';render(r.summary)}catch(e){$('#msg').textContent=e.message;$('#msg').className='msg warn'}}
-$('#send').onclick=send;$('#logout').onclick=async()=>{await fetch('/logout',{method:'POST'});location.href='/personal/login'};
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function setMic(active,label){
+  listening=active;
+  $('#mic').classList.toggle('listening',active);
+  $('#mic').textContent=label||(active?'🟡 IN ASCOLTO…':'🎙️ PARLA');
+}
+function editMode(id,raw){
+  editId=id;
+  $('#editHint').textContent='MODIFICA: premi PARLA e ridici la frase. Sostituirà completamente quella selezionata.';
+  $('#editHint').classList.add('show');
+  $('#msg').textContent='';
+}
+function clearEdit(){
+  editId=null;
+  $('#editHint').classList.remove('show');
+  $('#editHint').textContent='';
+}
+function render(s){
+  const t=s.totals||{};
+  $('#day').textContent=s.day;
+  $('#cal').textContent=n(t.calories,0);
+  $('#tri').textContent=n(t.triglycerides)+' g';
+  $('#sug').textContent=n(t.sugars)+' g';
+  $('#fat').textContent=n(t.fats)+' g';
+  $('#coffee').textContent=n(t.coffees,0);
+  $('#cigs').textContent=n(t.cigarettes,0);
+  $('#nosmoke').textContent=n(t.nosmoke,0);
+  $('#weight').textContent=s.weight?n(s.weight.value)+' kg':'—';
+  $('#version').textContent=s.version;
+  $('#enrich').textContent='';
+  $('#events').innerHTML=(s.recent||[]).map(e=>
+    '<div class="event">'+
+      '<div class="eventTop"><div><div class="etype">'+esc(e.event_type)+'</div><div>'+esc(e.raw_text)+'</div></div>'+
+      '<div class="eventActions">'+
+        '<button class="iconBtn" data-edit="'+e.id+'" data-raw="'+esc(e.raw_text)+'" aria-label="Modifica">✏️</button>'+
+        '<button class="iconBtn" data-del="'+e.id+'" aria-label="Elimina">🗑️</button>'+
+      '</div></div>'+
+      '<div class="raw">'+new Date(e.occurred_at).toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})+'</div>'+
+    '</div>'
+  ).join('');
+
+  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
+    const id=Number(b.dataset.del);
+    if(!confirm('Eliminare questo evento?'))return;
+    try{
+      const r=await api('/api/personal/events/'+id,{method:'DELETE'});
+      render(r.summary);
+      if(editId===id)clearEdit();
+    }catch(e){$('#msg').textContent=e.message;$('#msg').className='msg warn'}
+  });
+  document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editMode(Number(b.dataset.edit),b.dataset.raw));
+}
+async function load(){
+  try{render(await api('/api/personal/summary'))}
+  catch(e){$('#msg').textContent=e.message}
+}
+async function saveText(text){
+  text=String(text||'').trim();
+  if(!text)return;
+  try{
+    $('#msg').textContent=editId?'Sostituisco…':'Registro…';
+    const url=editId?'/api/personal/events/'+editId:'/api/personal/say';
+    const method=editId?'PUT':'POST';
+    const r=await api(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    $('#text').value='';
+    $('#msg').textContent=editId?'Modificato':'Registrato';
+    $('#msg').className='msg good';
+    clearEdit();
+    render(r.summary);
+  }catch(e){
+    $('#msg').textContent=e.message;
+    $('#msg').className='msg warn';
+  }
+}
+$('#send').onclick=()=>saveText($('#text').value);
+$('#logout').onclick=async()=>{await fetch('/personal/logout',{method:'POST'});location.href='/personal/login'};
+
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-if(SR){rec=new SR();rec.lang='it-IT';rec.interimResults=false;rec.continuous=false;rec.onresult=e=>{$('#text').value=e.results[0][0].transcript;send()};rec.onend=()=>{listening=false;$('#mic').classList.remove('listening');$('#mic').textContent='🎙️ PARLA'};rec.onerror=e=>{$('#msg').textContent='Voce non disponibile: '+e.error}}
-else{$('#mic').textContent='🎙️ DETTATURA NON DISPONIBILE';$('#mic').disabled=true}
-$('#mic').onclick=()=>{if(!rec)return;if(!listening){listening=true;$('#mic').classList.add('listening');$('#mic').textContent='ASCOLTO…';rec.start()}else rec.stop()};
+if(SR){
+  rec=new SR();
+  rec.lang='it-IT';
+  rec.interimResults=false;
+  rec.continuous=false;
+
+  // Crucial: show "IN ASCOLTO" only when recognition is really active.
+  rec.onstart=()=>{gotResult=false;setMic(true,'🟡 IN ASCOLTO…');$('#msg').textContent=''};
+  rec.onspeechstart=()=>{setMic(true,'🟡 TI SENTO…')};
+  rec.onresult=async e=>{
+    gotResult=true;
+    const spoken=Array.from(e.results).map(r=>r[0]?.transcript||'').join(' ').trim();
+    if(spoken)await saveText(spoken);
+  };
+  rec.onerror=e=>{
+    setMic(false,'🎙️ PARLA');
+    const map={not_allowed:'Microfono non autorizzato',audio_capture:'Microfono non disponibile',no_speech:'Non ho sentito nulla'};
+    $('#msg').textContent=map[e.error]||('Voce non disponibile: '+e.error);
+    $('#msg').className='msg warn';
+  };
+  rec.onend=()=>{
+    setMic(false,'🎙️ PARLA');
+    if(!gotResult && !$('#msg').textContent)$('#msg').textContent='Non ho ricevuto nessuna frase. Riprova.';
+  };
+}else{
+  $('#mic').textContent='🎙️ DETTATURA NON DISPONIBILE';
+  $('#mic').disabled=true;
+}
+
+$('#mic').onclick=()=>{
+  if(!rec||listening)return;
+  try{
+    $('#msg').textContent='Avvio microfono…';
+    gotResult=false;
+    rec.start();
+  }catch(e){
+    $('#msg').textContent='Microfono non pronto. Riprova.';
+    $('#msg').className='msg warn';
+    setMic(false,'🎙️ PARLA');
+  }
+};
+
 load();
 </script></body></html>
