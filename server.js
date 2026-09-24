@@ -35,6 +35,7 @@ const PACKAGE_ROOT = path.resolve(String(process.env.AUTSYS_RELAY_PACKAGE_ROOT |
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 app.use(express.json({ limit: MAX_BODY }));
+app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 
 app.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
@@ -284,6 +285,32 @@ hr{margin:28px 0}.hash{font-family:monospace;font-size:12px;word-break:break-all
 <p class="meta">Versione pubblicata per il flusso di sottoscrizione elettronica. Il documento ufficiale archiviato da AUTSYS S.R.L.S. è identificato dal numero e dall'hash sopra indicati.</p>
 </body>
 </html>`);
+});
+
+
+const EOLO_CHECKOUT_BASE = "https://checkout.stripe.com/g/pay/";
+const EOLO_CHECKOUT_SESSION = "cs_live_a1kvpyLvxIsaZjyhUbHcQuNgxybFy92ThGrQnKrIg9spPahlBEREpNFBek";
+const EOLO_CHECKOUT_FRAGMENT = "#fidnandhYHdWcXxpYCc%2FJ2FgY2RwaXEnKSdicyc%2FMSknYnUnPzcpJ2JpJz81KSdkdWxOYHwnPyd1blppbHNgWjA0UExpfGxWNFVAfzwwM0p9Z3MzQE9kQ2ZDfWdBbDNyMFw0YXQwT2hhUXN1NWZ0QHw1R0d0NEtvb0hNXD0yZzRiajNocTRXSmhLSzNvcEJtN2kwPWlSTm5UNTVGZjRUZD09aScpJ2N3amhWYHdzYHcnP3F3cGApJ2dkZm5id2pwa2FGamlqdyc%2FJyZjY2NjY2MnKSdpZHxqcHFRfHVgJz8ndmxrYmlgWmxxYGgnKSdga2RnaWBVaWRmYG1qaWFgd3YnP3F3cGB4JSUl";
+
+app.get("/subscribe/eolo/2026-001", (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abbonamento EOLO</title><style>body{font-family:Arial,sans-serif;max-width:820px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}</style></head><body>
+<h1>Collaborazione tecnica continuativa EOLO</h1>
+<p class="price">€ 200,00 + IVA 22% / mese</p>
+<p>Totale al pagamento: <strong>€ 244,00 al mese</strong>.</p>
+<div class="box"><h2>Condizioni contrattuali</h2><p><strong>2026/001 - AUTSYS SRLS AI - 24/09/2026 - REV.0</strong></p><p><a href="/legal/autsys-srls/2026-001" target="_blank" rel="noopener">Apri le condizioni complete</a></p><p class="meta">SHA-256: a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782</p></div>
+<form method="post" action="/subscribe/eolo/2026-001">
+<label><input type="checkbox" name="general" value="yes" required> Ho letto e accetto le condizioni contrattuali 2026/001 REV.0.</label>
+<label><input type="checkbox" name="specific" value="yes" required> Approvo specificamente le clausole 4, 6, 14 e 18 relative a rinnovo automatico, sospensione per mancato pagamento, responsabilità e foro competente.</label>
+<button type="submit">Accetta e vai al pagamento Stripe</button>
+</form></body></html>`);
+});
+
+app.post("/subscribe/eolo/2026-001", (req, res) => {
+  if (req.body?.general !== "yes" || req.body?.specific !== "yes") return res.status(400).send("Accettazione richiesta.");
+  const receipt = {event:"LEGAL_ACCEPTANCE",contract:"2026/001",revision:"REV.0",sha256:"a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782",accepted_at:new Date().toISOString(),ip:String(req.ip||req.socket.remoteAddress||""),user_agent:String(req.get("user-agent")||"")};
+  console.log("LEGAL_ACCEPTANCE", JSON.stringify(receipt));
+  return res.redirect(303, EOLO_CHECKOUT_BASE + EOLO_CHECKOUT_SESSION + EOLO_CHECKOUT_FRAGMENT);
 });
 
 app.post("/v1/manager/bootstrap", (req, res) => {
