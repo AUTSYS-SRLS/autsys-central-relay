@@ -19,6 +19,7 @@ const PROTOCOL = 2; // backward-compatible with Manager Android 1.0.0.17
 
 const CENTRAL_KEY = String(process.env.AUTSYS_CENTRAL_RELAY_KEY || "");
 const MANAGER_TOKEN_KEY = String(process.env.AUTSYS_MANAGER_TOKEN_KEY || "");
+const STRIPE_AUTSYS_FULL_KEY = String(process.env.STRIPE_AUTSYS_FULL_KEY || "");
 
 const MAX_EVENTS = 5000;
 const MAX_COMMANDS_PER_INSTALLATION = 500;
@@ -53,6 +54,31 @@ const isUuid = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0
 const isBindingSecret = (v) => typeof v === "string" && /^[A-Za-z0-9_-]{32,128}$/.test(v);
 const isSha256 = (v) => typeof v === "string" && /^[0-9a-f]{64}$/i.test(v);
 const asObject = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : null);
+
+async function stripePost(endpoint, fields) {
+  if (!STRIPE_AUTSYS_FULL_KEY) throw new Error("stripe_not_configured");
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined && v !== null && v !== "") body.append(k, String(v));
+  }
+  const response = await fetch("https://api.stripe.com" + endpoint, {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + STRIPE_AUTSYS_FULL_KEY,
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = json?.error?.message || ("Stripe HTTP " + response.status);
+    const err = new Error(message);
+    err.status = response.status;
+    err.stripe = json?.error || null;
+    throw err;
+  }
+  return json;
+}
 
 function safeEqualText(a, b) {
   const ab = Buffer.from(String(a));
@@ -288,9 +314,11 @@ hr{margin:28px 0}.hash{font-family:monospace;font-size:12px;word-break:break-all
 });
 
 
-const EOLO_CHECKOUT_BASE = "https://checkout.stripe.com/g/pay/";
-const EOLO_CHECKOUT_SESSION = "cs_live_a1kvpyLvxIsaZjyhUbHcQuNgxybFy92ThGrQnKrIg9spPahlBEREpNFBek";
-const EOLO_CHECKOUT_FRAGMENT = "#fidnandhYHdWcXxpYCc%2FJ2FgY2RwaXEnKSdicyc%2FMSknYnUnPzcpJ2JpJz81KSdkdWxOYHwnPyd1blppbHNgWjA0UExpfGxWNFVAfzwwM0p9Z3MzQE9kQ2ZDfWdBbDNyMFw0YXQwT2hhUXN1NWZ0QHw1R0d0NEtvb0hNXD0yZzRiajNocTRXSmhLSzNvcEJtN2kwPWlSTm5UNTVGZjRUZD09aScpJ2N3amhWYHdzYHcnP3F3cGApJ2dkZm5id2pwa2FGamlqdyc%2FJyZjY2NjY2MnKSdpZHxqcHFRfHVgJz8ndmxrYmlgWmxxYGgnKSdga2RnaWBVaWRmYG1qaWFgd3YnP3F3cGB4JSUl";
+const EOLO_PRICE_ID = "price_1UJ7rwS1PEz956OxpDl62giQ";
+const EOLO_TAX_RATE_ID = "txr_1UJ7xeS1PEz956Ox2ZVQHlNr";
+const EOLO_CONTRACT = "2026/001";
+const EOLO_CONTRACT_REVISION = "REV.0";
+const EOLO_CONTRACT_SHA256 = "a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782";
 
 app.get("/subscribe/eolo/2026-001", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -306,11 +334,64 @@ app.get("/subscribe/eolo/2026-001", (req, res) => {
 </form></body></html>`);
 });
 
-app.post("/subscribe/eolo/2026-001", (req, res) => {
-  if (req.body?.general !== "yes" || req.body?.specific !== "yes") return res.status(400).send("Accettazione richiesta.");
-  const receipt = {event:"LEGAL_ACCEPTANCE",contract:"2026/001",revision:"REV.0",sha256:"a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782",accepted_at:new Date().toISOString(),ip:String(req.ip||req.socket.remoteAddress||""),user_agent:String(req.get("user-agent")||"")};
+app.post("/subscribe/eolo/2026-001", async (req, res) => {
+  if (req.body?.general !== "yes" || req.body?.specific !== "yes") {
+    return res.status(400).send("Accettazione richiesta.");
+  }
+
+  const acceptedAt = new Date().toISOString();
+  const receipt = {
+    event: "LEGAL_ACCEPTANCE",
+    contract: EOLO_CONTRACT,
+    revision: EOLO_CONTRACT_REVISION,
+    sha256: EOLO_CONTRACT_SHA256,
+    accepted_general: true,
+    accepted_specific_articles: ["4","6","14","18"],
+    accepted_at: acceptedAt,
+    ip: String(req.ip || req.socket.remoteAddress || ""),
+    user_agent: String(req.get("user-agent") || "")
+  };
   console.log("LEGAL_ACCEPTANCE", JSON.stringify(receipt));
-  return res.redirect(303, EOLO_CHECKOUT_BASE + EOLO_CHECKOUT_SESSION + EOLO_CHECKOUT_FRAGMENT);
+
+  try {
+    const session = await stripePost("/v1/checkout/sessions", {
+      "mode": "subscription",
+      "line_items[0][price]": EOLO_PRICE_ID,
+      "line_items[0][quantity]": "1",
+      "line_items[0][tax_rates][0]": EOLO_TAX_RATE_ID,
+      "billing_address_collection": "required",
+      "tax_id_collection[enabled]": "true",
+      "name_collection[business][enabled]": "true",
+      "name_collection[business][optional]": "false",
+      "success_url": publicBase(req) + "/subscribe/eolo/2026-001/success?session_id={CHECKOUT_SESSION_ID}",
+      "cancel_url": publicBase(req) + "/subscribe/eolo/2026-001",
+      "client_reference_id": "EOLO-2026-001",
+      "metadata[contract_number]": EOLO_CONTRACT,
+      "metadata[contract_revision]": EOLO_CONTRACT_REVISION,
+      "metadata[contract_sha256]": EOLO_CONTRACT_SHA256,
+      "metadata[accepted_at]": acceptedAt,
+      "subscription_data[metadata][contract_number]": EOLO_CONTRACT,
+      "subscription_data[metadata][contract_revision]": EOLO_CONTRACT_REVISION,
+      "subscription_data[metadata][contract_sha256]": EOLO_CONTRACT_SHA256,
+      "subscription_data[metadata][accepted_at]": acceptedAt
+    });
+    console.log("STRIPE_CHECKOUT_CREATED", JSON.stringify({
+      session_id: session.id,
+      contract: EOLO_CONTRACT,
+      revision: EOLO_CONTRACT_REVISION,
+      accepted_at: acceptedAt
+    }));
+    return res.redirect(303, session.url);
+  } catch (err) {
+    console.error("STRIPE_CHECKOUT_ERROR", err?.message || String(err));
+    return res.status(502).send("Impossibile avviare il pagamento Stripe. Riprova tra poco.");
+  }
+});
+
+app.get("/subscribe/eolo/2026-001/success", (req, res) => {
+  const sessionId = String(req.query.session_id || "");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abbonamento attivato</title><style>body{font-family:Arial,sans-serif;max-width:760px;margin:50px auto;padding:0 24px;line-height:1.5;color:#111}.ok{border:1px solid #ddd;border-radius:10px;padding:22px}</style></head><body><div class="ok"><h1>Pagamento completato</h1><p>Grazie. Stripe ha completato il flusso di pagamento per l'abbonamento EOLO.</p><p>Riferimento contratto: <strong>2026/001 REV.0</strong></p><p>Sessione Stripe: <code>${sessionId.replace(/[<>&"]/g,"")}</code></p></div></body></html>`);
 });
 
 app.post("/v1/manager/bootstrap", (req, res) => {
