@@ -438,6 +438,7 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
       "metadata[buyer_type]": buyerType,
       "metadata[fiscal_code]": fiscalCode,
       "metadata[sdi_code]": sdiCode,
+      "metadata[codice_destinatario]": sdiCode,
       "metadata[pec]": pec,
       "metadata[contract_number]": EOLO_CONTRACT,
       "metadata[contract_revision]": EOLO_CONTRACT_REVISION
