@@ -20,6 +20,8 @@ const PROTOCOL = 2; // backward-compatible with Manager Android 1.0.0.17
 const CENTRAL_KEY = String(process.env.AUTSYS_CENTRAL_RELAY_KEY || "");
 const MANAGER_TOKEN_KEY = String(process.env.AUTSYS_MANAGER_TOKEN_KEY || "");
 const STRIPE_AUTSYS_FULL_KEY = String(process.env.STRIPE_AUTSYS_FULL_KEY || "");
+const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "");
+const AUTSYS_CONTRACT_FROM = String(process.env.AUTSYS_CONTRACT_FROM || "AUTSYS S.R.L.S. <contratti@autsys-srls.com>");
 
 const MAX_EVENTS = 5000;
 const MAX_COMMANDS_PER_INSTALLATION = 500;
@@ -37,6 +39,7 @@ app.set("trust proxy", 1);
 app.disable("x-powered-by");
 app.use(express.json({ limit: MAX_BODY }));
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
+app.use("/assets", express.static(path.join(process.cwd(), "public", "assets")));
 
 app.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
@@ -76,6 +79,48 @@ async function stripePost(endpoint, fields) {
     err.status = response.status;
     err.stripe = json?.error || null;
     throw err;
+  }
+  return json;
+}
+
+async function sendContractEmail({ to, companyName, acceptedAt, baseUrl }) {
+  if (!RESEND_API_KEY) throw new Error("resend_not_configured");
+  const contractUrl = baseUrl + "/legal/autsys-srls/2026-001";
+  const logoUrl = baseUrl + "/assets/autsys-logo.png";
+  const legalResponse = await fetch(contractUrl);
+  if (!legalResponse.ok) throw new Error("contract_page_unavailable");
+  let contractHtml = await legalResponse.text();
+  contractHtml = contractHtml.replace(
+    "<body>",
+    '<body><div style="text-align:center;margin:0 0 26px"><img src="' + logoUrl + '" alt="AUTSYS S.R.L.S." style="max-width:340px;width:72%;height:auto"></div>'
+  );
+  contractHtml = contractHtml.replace(
+    "</body>",
+    '<hr><p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#555"><strong>Conferma di accettazione elettronica</strong><br>Cliente: ' +
+    String(companyName).replace(/[<>&"]/g,"") +
+    '<br>Data e ora: ' + String(acceptedAt).replace(/[<>&"]/g,"") +
+    '<br>Il pagamento non è ancora stato eseguito al momento dell\'invio di questa email.</p></body>'
+  );
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + RESEND_API_KEY,
+      "Content-Type": "application/json",
+      "Idempotency-Key": "eolo-contract-" + Buffer.from(to + "|" + acceptedAt).toString("base64url").slice(0,120)
+    },
+    body: JSON.stringify({
+      from: AUTSYS_CONTRACT_FROM,
+      to: [to],
+      subject: "Contratto AUTSYS 2026/001 REV.0 - condizioni accettate",
+      text: "Contratto AUTSYS S.R.L.S. 2026/001 REV.0 accettato elettronicamente. Versione integrale: " + contractUrl,
+      html: contractHtml
+    })
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = json?.message || json?.error || ("Resend HTTP " + response.status);
+    throw new Error(String(message));
   }
   return json;
 }
@@ -249,6 +294,7 @@ hr{margin:28px 0}.hash{font-family:monospace;font-size:12px;word-break:break-all
 </style>
 </head>
 <body>
+<div style="text-align:center;margin-bottom:28px"><img src="/assets/autsys-logo.png" alt="AUTSYS S.R.L.S." style="max-width:340px;width:72%;height:auto"></div>
 <h1>CONDIZIONI CONTRATTUALI DEL SERVIZIO IN ABBONAMENTO</h1>
 <p><strong>Collaborazione tecnica continuativa AUTSYS S.R.L.S. per TERMOMECCANICA EOLO</strong></p>
 <p class="meta">Documento: 2026/001 - AUTSYS SRLS AI - 24/09/2026 &nbsp;|&nbsp; Revisione: REV.0</p>
@@ -323,9 +369,9 @@ const EOLO_CONTRACT_SHA256 = "a263d98e2e19d94c0f380f9fa5ec96107df084a80715fd3f66
 app.get("/subscribe/eolo/2026-001", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abbonamento EOLO</title><style>
-body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:10px 0 4px;font-weight:600}input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:6px}.check{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px;font-weight:400}.check input{width:auto;margin-right:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}@media(max-width:700px){.grid,.grid3{grid-template-columns:1fr}}
+body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.brand{text-align:center;margin-bottom:28px}.brand img{max-width:340px;width:72%;height:auto}.contract-frame{width:100%;height:620px;border:1px solid #ddd;border-radius:8px;background:#fff}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:10px 0 4px;font-weight:600}input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:6px}.check{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px;font-weight:400}.check input{width:auto;margin-right:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}@media(max-width:700px){.grid,.grid3{grid-template-columns:1fr}}
 </style></head><body>
-<h1>Collaborazione tecnica continuativa EOLO</h1>
+<div class="brand"><img src="/assets/autsys-logo.png" alt="AUTSYS S.R.L.S."></div><h1>Collaborazione tecnica continuativa EOLO</h1>
 <p class="price">€ 250,00 + IVA 22% / mese</p>
 <p>Totale al pagamento: <strong>€ 305,00 al mese</strong>.</p>
 
@@ -358,7 +404,7 @@ body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24p
 <p class="meta">Inserire almeno uno tra Codice destinatario SDI e PEC. L'email indicata riceverà copia delle condizioni accettate e le comunicazioni relative alla sottoscrizione.</p>
 </div>
 
-<div class="box"><h2>Condizioni contrattuali</h2><p><strong>2026/001 - AUTSYS SRLS AI - 24/09/2026 - REV.0</strong></p><p><a href="/legal/autsys-srls/2026-001" target="_blank" rel="noopener">Apri le condizioni complete</a></p><p class="meta">SHA-256: a263d98e2e19d94c0f380f9fa5ec96107df084a80715fd3f66c41ceb873dee93</p></div>
+<div class="box"><h2>Condizioni contrattuali</h2><p><strong>2026/001 - AUTSYS SRLS AI - 24/09/2026 - REV.0</strong></p><iframe class="contract-frame" src="/legal/autsys-srls/2026-001" title="Contratto AUTSYS 2026/001 REV.0"></iframe><p><a href="/legal/autsys-srls/2026-001" target="_blank" rel="noopener">Apri il contratto in una nuova finestra</a></p><p class="meta">SHA-256: a263d98e2e19d94c0f380f9fa5ec96107df084a80715fd3f66c41ceb873dee93</p></div>
 <label class="check"><input type="checkbox" name="general" value="yes" required> Ho letto e accetto le condizioni contrattuali 2026/001 REV.0.</label>
 <label class="check"><input type="checkbox" name="specific" value="yes" required> Approvo specificamente le clausole 4, 6, 14 e 18 relative a rinnovo automatico, sospensione per mancato pagamento, responsabilità e foro competente.</label>
 <button type="submit">Accetta e vai al pagamento Stripe</button>
@@ -425,6 +471,24 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
     user_agent: String(req.get("user-agent") || "")
   };
   console.log("LEGAL_ACCEPTANCE", JSON.stringify(receipt));
+
+  try {
+    await sendContractEmail({
+      to: billingEmail,
+      companyName,
+      acceptedAt,
+      baseUrl: publicBase(req)
+    });
+    console.log("CONTRACT_EMAIL_SENT", JSON.stringify({
+      contract: EOLO_CONTRACT,
+      revision: EOLO_CONTRACT_REVISION,
+      billing_email: billingEmail,
+      accepted_at: acceptedAt
+    }));
+  } catch (err) {
+    console.error("CONTRACT_EMAIL_ERROR", err?.message || String(err));
+    return res.status(502).send("Non è stato possibile inviare il contratto all'email indicata. Nessun pagamento è stato avviato. Riprova tra poco.");
+  }
 
   try {
     const customer = await stripePost("/v1/customers", {
