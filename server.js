@@ -203,6 +203,89 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, service: "autsys-central-relay", version: VERSION, protocol: PROTOCOL, ts: nowSec() });
 });
 
+// Public legal document endpoint used by Stripe Checkout until the AUTSYS website
+// exposes the canonical legal-document area. Content mirrors AUTSYS SRLS AI 2026/001 REV.0.
+app.get("/legal/autsys-srls/2026-001", (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=300");
+  res.send(`<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2026/001 - Condizioni contrattuali AUTSYS S.R.L.S. / EOLO</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:40px auto;padding:0 24px;line-height:1.55;color:#111}
+h1{font-size:24px}h2{font-size:18px;margin-top:28px}.meta{font-size:14px;color:#444}.parties{margin:24px 0}
+hr{margin:28px 0}.hash{font-family:monospace;font-size:12px;word-break:break-all}
+@media print{body{max-width:none;margin:0}.noprint{display:none}}
+</style>
+</head>
+<body>
+<h1>CONDIZIONI CONTRATTUALI DEL SERVIZIO IN ABBONAMENTO</h1>
+<p><strong>Collaborazione tecnica continuativa AUTSYS S.R.L.S. per TERMOMECCANICA EOLO</strong></p>
+<p class="meta">Documento: 2026/001 - AUTSYS SRLS AI - 24/09/2026 &nbsp;|&nbsp; Revisione: REV.0</p>
+<p class="meta">SHA-256 documento ufficiale: <span class="hash">a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782</span></p>
+<div class="parties">
+<p>Tra</p>
+<p><strong>AUTSYS S.R.L.S.</strong>, con sede in Genova (GE), Via Camilla 3/6, C.F. e P. IVA 02847140999, REA GE-515278, di seguito “AUTSYS” o “Fornitore”;</p>
+<p>e</p>
+<p><strong>TERMOMECCANICA “EOLO” DI AUTELLI ING. FRANCESCO</strong>, di seguito “EOLO” o “Cliente”;</p>
+<p>congiuntamente, le “Parti”.</p>
+</div>
+<h2>1. Oggetto del servizio</h2>
+<p>AUTSYS fornisce a EOLO un servizio continuativo di collaborazione tecnica e informatica in abbonamento, finalizzato al supporto, alla gestione, alla manutenzione e all’evoluzione dei sistemi software, informatici e digitali utilizzati dal Cliente.</p>
+<p>Il servizio può comprendere, secondo le necessità operative concordate tra le Parti: assistenza tecnica e informatica; analisi e risoluzione di problematiche software e infrastrutturali; sviluppo, modifica e manutenzione di software e automazioni; supporto a database e sistemi informativi; integrazione tra applicazioni; analisi, ottimizzazione e miglioramento dei processi digitali; interventi tecnici sui sistemi e sui progetti gestiti da AUTSYS per conto di EOLO.</p>
+<p>L’abbonamento costituisce un rapporto continuativo di collaborazione tecnica. Salvo diverso accordo scritto, non attribuisce un monte ore minimo garantito né un numero predeterminato di interventi mensili.</p>
+<h2>2. Attività escluse o straordinarie</h2>
+<p>Non sono comprese automaticamente nell’abbonamento le attività che, per natura, dimensione, costo o impegno richiesto, costituiscano una fornitura o un progetto autonomo o straordinario. Rientrano, a titolo esemplificativo, la fornitura di hardware, l’acquisto di licenze o servizi di terzi, le trasferte e relative spese, nonché sviluppi o progetti di rilevanza tale da richiedere un distinto accordo economico.</p>
+<p>Prima dell’avvio di attività straordinarie con costi aggiuntivi, AUTSYS ne informa EOLO e ne concorda le condizioni.</p>
+<h2>3. Corrispettivo</h2>
+<p>Il corrispettivo dell’abbonamento è pari a <strong>€ 200,00 + IVA.</strong></p>
+<p>Il pagamento avviene tramite il sistema elettronico messo a disposizione da AUTSYS. Con la sottoscrizione, il Cliente autorizza l’addebito ricorrente sul metodo di pagamento indicato, secondo la periodicità mensile prevista.</p>
+<h2>4. Durata e rinnovo automatico</h2>
+<p>L’abbonamento ha durata mensile e si rinnova automaticamente di mese in mese fino alla sua cessazione. Non è previsto un periodo minimo obbligatorio di permanenza, salvo diverso accordo scritto tra le Parti.</p>
+<h2>5. Recesso e cessazione</h2>
+<p>Ciascuna Parte può richiedere la cessazione dell’abbonamento. La cessazione impedisce i rinnovi successivi e non determina il rimborso dei periodi già pagati e iniziati, salvo diverso accordo tra le Parti o obblighi inderogabili di legge.</p>
+<p>Le attività già concordate o avviate alla data di cessazione saranno gestite secondo buona fede e, quando necessario, completate o consegnate secondo modalità concordate tra le Parti.</p>
+<h2>6. Pagamenti non riusciti</h2>
+<p>In caso di mancato pagamento o impossibilità di effettuare l’addebito automatico, il sistema di pagamento potrà effettuare ulteriori tentativi di riscossione. Qualora l’insoluto permanga, AUTSYS potrà sospendere il servizio fino alla regolarizzazione, fermo restando quanto già maturato.</p>
+<h2>7. Modalità operative</h2>
+<p>Le singole attività vengono definite nel corso del rapporto sulla base delle necessità di EOLO e delle priorità concordate. AUTSYS mantiene autonomia tecnica e organizzativa nell’esecuzione delle attività affidate, nel rispetto delle esigenze operative del Cliente.</p>
+<p>Quando un intervento possa comportare modifiche rilevanti a sistemi, dati o processi aziendali, AUTSYS può richiedere una preventiva conferma del Cliente prima di procedere.</p>
+<h2>8. Obblighi del Cliente</h2>
+<p>EOLO si impegna a fornire le informazioni, le autorizzazioni e gli accessi ragionevolmente necessari allo svolgimento delle attività richieste. Il Cliente rimane responsabile della correttezza delle informazioni fornite, delle decisioni aziendali assunte e dell’uso dei propri sistemi e software.</p>
+<h2>9. Accessi, credenziali e sicurezza</h2>
+<p>Qualora AUTSYS debba accedere a sistemi, applicazioni o infrastrutture di EOLO, tali accessi saranno utilizzati esclusivamente per le finalità del servizio e nella misura necessaria all’esecuzione delle attività concordate. AUTSYS adotta misure ragionevoli per proteggere le credenziali e le informazioni alle quali abbia accesso.</p>
+<h2>10. Riservatezza</h2>
+<p>Le Parti si impegnano a mantenere riservate le informazioni tecniche, commerciali, organizzative e aziendali apprese nell’ambito del rapporto e non destinate alla diffusione pubblica. L’obbligo di riservatezza permane anche dopo la cessazione dell’abbonamento.</p>
+<h2>11. Dati e documentazione del Cliente</h2>
+<p>I dati, i documenti e le informazioni appartenenti a EOLO rimangono di titolarità del Cliente. AUTSYS può utilizzarli esclusivamente nella misura necessaria allo svolgimento delle attività concordate, salvo ulteriori finalità espressamente autorizzate.</p>
+<p>Qualora l’esecuzione del servizio comporti trattamenti di dati personali per conto del Cliente che richiedano specifici adempimenti ai sensi della normativa applicabile, le Parti provvederanno agli eventuali accordi o atti ulteriori necessari.</p>
+<h2>12. Software e proprietà intellettuale</h2>
+<p>Restano di proprietà di ciascuna Parte i software, i sistemi, le tecnologie, le metodologie, il codice e il patrimonio di conoscenze già esistenti prima delle singole attività.</p>
+<p>La titolarità di nuovi software, modifiche, personalizzazioni o altri risultati sviluppati nell’ambito del rapporto sarà determinata, quando necessario, in funzione della natura della singola attività e degli eventuali accordi specifici relativi al progetto interessato. L’abbonamento, da solo, non comporta il trasferimento della proprietà intellettuale di software o tecnologie AUTSYS.</p>
+<h2>13. Servizi e sistemi di terzi</h2>
+<p>Alcune attività potranno dipendere da prodotti, servizi, infrastrutture o piattaforme di terzi. AUTSYS non risponde di interruzioni, malfunzionamenti o cessazioni direttamente imputabili a tali soggetti e non sotto il proprio controllo, fermo restando l’impegno a collaborare nella ricerca di soluzioni tecnicamente ragionevoli.</p>
+<h2>14. Responsabilità</h2>
+<p>AUTSYS si impegna a svolgere le attività con diligenza e secondo criteri tecnici adeguati alla natura dell’intervento. AUTSYS non garantisce l’assenza assoluta di errori o interruzioni nei sistemi informatici, né risultati dipendenti da fattori esterni al proprio controllo.</p>
+<p>Eventuali limitazioni di responsabilità non si applicano nei casi in cui la responsabilità non possa essere esclusa o limitata ai sensi della legge applicabile.</p>
+<h2>15. Modifiche del servizio o delle condizioni</h2>
+<p>Eventuali modifiche sostanziali al prezzo, alla natura dell’abbonamento o alle presenti condizioni saranno comunicate al Cliente prima della loro applicazione. Le modifiche non avranno effetto retroattivo sui periodi già pagati.</p>
+<p>Qualora EOLO non intenda accettare una modifica applicabile ai rinnovi successivi, potrà cessare l’abbonamento prima dell’entrata in vigore della nuova condizione.</p>
+<h2>16. Accettazione delle condizioni</h2>
+<p>La sottoscrizione dell’abbonamento richiede l’accettazione espressa delle presenti condizioni. Prima della conferma del pagamento, al Cliente viene resa disponibile la versione delle condizioni applicabile all’abbonamento.</p>
+<p>L’accettazione elettronica viene associata all’abbonamento sottoscritto e ne costituisce parte integrante. AUTSYS conserva evidenza almeno dell’identità del Cliente, della versione delle condizioni accettate, della data e ora dell’accettazione, del servizio e del prezzo sottoscritti, nonché del relativo identificativo dell’abbonamento e/o della transazione elettronica.</p>
+<h2>17. Comunicazioni</h2>
+<p>Le comunicazioni relative al rapporto potranno essere effettuate mediante i canali normalmente utilizzati tra le Parti, ivi inclusa la posta elettronica. Salvo diverso accordo scritto, per AUTSYS il riferimento ordinario è guido.autelli@autsys-srls.com.</p>
+<h2>18. Legge applicabile e foro competente</h2>
+<p>Le presenti condizioni sono regolate dalla legge italiana. Per ogni controversia relativa alla loro interpretazione, esecuzione o validità sarà competente in via esclusiva il Foro di Genova, salvo norme inderogabili di legge.</p>
+<hr>
+<p class="meta">Versione pubblicata per il flusso di sottoscrizione elettronica. Il documento ufficiale archiviato da AUTSYS S.R.L.S. è identificato dal numero e dall'hash sopra indicati.</p>
+</body>
+</html>`);
+});
+
 app.post("/v1/manager/bootstrap", (req, res) => {
   if (!MANAGER_TOKEN_KEY) return res.status(503).json({ ok: false, error: "relay_not_configured" });
   if (!allowBootstrap(req)) return res.status(429).json({ ok: false, error: "bootstrap_rate_limited" });
