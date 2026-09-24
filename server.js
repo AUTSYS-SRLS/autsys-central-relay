@@ -519,6 +519,7 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
       "line_items[0][quantity]": "1",
       "line_items[0][tax_rates][0]": EOLO_TAX_RATE_ID,
       "customer": customer.id,
+      "customer_update[name]": "auto",
       "billing_address_collection": "required",
       "tax_id_collection[enabled]": "true",
       "name_collection[business][enabled]": "true",
