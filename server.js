@@ -322,14 +322,38 @@ const EOLO_CONTRACT_SHA256 = "a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353
 
 app.get("/subscribe/eolo/2026-001", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(`<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abbonamento EOLO</title><style>body{font-family:Arial,sans-serif;max-width:820px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}</style></head><body>
+  res.send(`<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abbonamento EOLO</title><style>
+body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:10px 0 4px;font-weight:600}input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:6px}.check{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px;font-weight:400}.check input{width:auto;margin-right:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}@media(max-width:700px){.grid,.grid3{grid-template-columns:1fr}}
+</style></head><body>
 <h1>Collaborazione tecnica continuativa EOLO</h1>
 <p class="price">€ 200,00 + IVA 22% / mese</p>
 <p>Totale al pagamento: <strong>€ 244,00 al mese</strong>.</p>
-<div class="box"><h2>Condizioni contrattuali</h2><p><strong>2026/001 - AUTSYS SRLS AI - 24/09/2026 - REV.0</strong></p><p><a href="/legal/autsys-srls/2026-001" target="_blank" rel="noopener">Apri le condizioni complete</a></p><p class="meta">SHA-256: a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782</p></div>
+
 <form method="post" action="/subscribe/eolo/2026-001">
-<label><input type="checkbox" name="general" value="yes" required> Ho letto e accetto le condizioni contrattuali 2026/001 REV.0.</label>
-<label><input type="checkbox" name="specific" value="yes" required> Approvo specificamente le clausole 4, 6, 14 e 18 relative a rinnovo automatico, sospensione per mancato pagamento, responsabilità e foro competente.</label>
+<div class="box">
+<h2>Dati aziendali e fatturazione elettronica</h2>
+<label>Ragione sociale / denominazione</label><input name="company_name" required maxlength="140" value="TERMOMECCANICA &quot;EOLO&quot; DI AUTELLI ING. FRANCESCO">
+<div class="grid">
+<div><label>Partita IVA</label><input name="vat_number" required maxlength="20" autocomplete="off"></div>
+<div><label>Codice fiscale</label><input name="fiscal_code" maxlength="20" autocomplete="off"></div>
+</div>
+<label>Indirizzo sede</label><input name="address_line1" required maxlength="180">
+<div class="grid3">
+<div><label>CAP</label><input name="postal_code" required maxlength="10"></div>
+<div><label>Comune</label><input name="city" required maxlength="80"></div>
+<div><label>Provincia</label><input name="province" required maxlength="4" placeholder="GE"></div>
+</div>
+<div class="grid">
+<div><label>Codice destinatario SDI</label><input name="sdi_code" maxlength="7" autocomplete="off"></div>
+<div><label>PEC</label><input name="pec" type="email" maxlength="254"></div>
+</div>
+<label>Email amministrativa / fatturazione</label><input name="billing_email" type="email" required maxlength="254">
+<p class="meta">Inserire almeno uno tra Codice destinatario SDI e PEC. L'email indicata riceverà copia delle condizioni accettate e le comunicazioni relative alla sottoscrizione.</p>
+</div>
+
+<div class="box"><h2>Condizioni contrattuali</h2><p><strong>2026/001 - AUTSYS SRLS AI - 24/09/2026 - REV.0</strong></p><p><a href="/legal/autsys-srls/2026-001" target="_blank" rel="noopener">Apri le condizioni complete</a></p><p class="meta">SHA-256: a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782</p></div>
+<label class="check"><input type="checkbox" name="general" value="yes" required> Ho letto e accetto le condizioni contrattuali 2026/001 REV.0.</label>
+<label class="check"><input type="checkbox" name="specific" value="yes" required> Approvo specificamente le clausole 4, 6, 14 e 18 relative a rinnovo automatico, sospensione per mancato pagamento, responsabilità e foro competente.</label>
 <button type="submit">Accetta e vai al pagamento Stripe</button>
 </form></body></html>`);
 });
@@ -337,6 +361,28 @@ app.get("/subscribe/eolo/2026-001", (req, res) => {
 app.post("/subscribe/eolo/2026-001", async (req, res) => {
   if (req.body?.general !== "yes" || req.body?.specific !== "yes") {
     return res.status(400).send("Accettazione richiesta.");
+  }
+
+  const clean = (v, max=254) => String(v || "").trim().slice(0,max);
+  const companyName = clean(req.body?.company_name, 140);
+  const vatNumber = clean(req.body?.vat_number, 20).replace(/\s+/g,"").toUpperCase();
+  const fiscalCode = clean(req.body?.fiscal_code, 20).replace(/\s+/g,"").toUpperCase();
+  const addressLine1 = clean(req.body?.address_line1, 180);
+  const postalCode = clean(req.body?.postal_code, 10);
+  const city = clean(req.body?.city, 80);
+  const province = clean(req.body?.province, 4).toUpperCase();
+  const sdiCode = clean(req.body?.sdi_code, 7).toUpperCase();
+  const pec = clean(req.body?.pec, 254).toLowerCase();
+  const billingEmail = clean(req.body?.billing_email, 254).toLowerCase();
+
+  if (!companyName || !vatNumber || !addressLine1 || !postalCode || !city || !province || !billingEmail) {
+    return res.status(400).send("Dati aziendali e di fatturazione incompleti.");
+  }
+  if (!sdiCode && !pec) {
+    return res.status(400).send("Inserire almeno Codice destinatario SDI oppure PEC.");
+  }
+  if (!/^\S+@\S+\.\S+$/.test(billingEmail) || (pec && !/^\S+@\S+\.\S+$/.test(pec))) {
+    return res.status(400).send("Indirizzo email non valido.");
   }
 
   const acceptedAt = new Date().toISOString();
@@ -348,6 +394,17 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
     accepted_general: true,
     accepted_specific_articles: ["4","6","14","18"],
     accepted_at: acceptedAt,
+    company_name: companyName,
+    vat_number: vatNumber,
+    fiscal_code: fiscalCode,
+    address_line1: addressLine1,
+    postal_code: postalCode,
+    city,
+    province,
+    country: "IT",
+    sdi_code: sdiCode,
+    pec,
+    billing_email: billingEmail,
     ip: String(req.ip || req.socket.remoteAddress || ""),
     user_agent: String(req.get("user-agent") || "")
   };
@@ -359,6 +416,7 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
       "line_items[0][price]": EOLO_PRICE_ID,
       "line_items[0][quantity]": "1",
       "line_items[0][tax_rates][0]": EOLO_TAX_RATE_ID,
+      "customer_email": billingEmail,
       "billing_address_collection": "required",
       "tax_id_collection[enabled]": "true",
       "name_collection[business][enabled]": "true",
@@ -370,16 +428,35 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
       "metadata[contract_revision]": EOLO_CONTRACT_REVISION,
       "metadata[contract_sha256]": EOLO_CONTRACT_SHA256,
       "metadata[accepted_at]": acceptedAt,
+      "metadata[company_name]": companyName,
+      "metadata[vat_number]": vatNumber,
+      "metadata[fiscal_code]": fiscalCode,
+      "metadata[address_line1]": addressLine1,
+      "metadata[postal_code]": postalCode,
+      "metadata[city]": city,
+      "metadata[province]": province,
+      "metadata[country]": "IT",
+      "metadata[sdi_code]": sdiCode,
+      "metadata[pec]": pec,
+      "metadata[billing_email]": billingEmail,
       "subscription_data[metadata][contract_number]": EOLO_CONTRACT,
       "subscription_data[metadata][contract_revision]": EOLO_CONTRACT_REVISION,
       "subscription_data[metadata][contract_sha256]": EOLO_CONTRACT_SHA256,
-      "subscription_data[metadata][accepted_at]": acceptedAt
+      "subscription_data[metadata][accepted_at]": acceptedAt,
+      "subscription_data[metadata][vat_number]": vatNumber,
+      "subscription_data[metadata][sdi_code]": sdiCode,
+      "subscription_data[metadata][pec]": pec,
+      "subscription_data[metadata][billing_email]": billingEmail
     });
     console.log("STRIPE_CHECKOUT_CREATED", JSON.stringify({
       session_id: session.id,
       contract: EOLO_CONTRACT,
       revision: EOLO_CONTRACT_REVISION,
-      accepted_at: acceptedAt
+      accepted_at: acceptedAt,
+      billing_email: billingEmail,
+      vat_number: vatNumber,
+      sdi_code: sdiCode,
+      pec
     }));
     return res.redirect(303, session.url);
   } catch (err) {
