@@ -44,7 +44,7 @@ app.use("/assets", express.static(path.join(process.cwd(), "public", "assets")))
 app.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-AUTSYS-Relay-Version", VERSION);
   res.setHeader("X-AUTSYS-Protocol", String(PROTOCOL));
