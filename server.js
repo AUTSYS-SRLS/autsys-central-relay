@@ -252,7 +252,7 @@ hr{margin:28px 0}.hash{font-family:monospace;font-size:12px;word-break:break-all
 <h1>CONDIZIONI CONTRATTUALI DEL SERVIZIO IN ABBONAMENTO</h1>
 <p><strong>Collaborazione tecnica continuativa AUTSYS S.R.L.S. per TERMOMECCANICA EOLO</strong></p>
 <p class="meta">Documento: 2026/001 - AUTSYS SRLS AI - 24/09/2026 &nbsp;|&nbsp; Revisione: REV.0</p>
-<p class="meta">SHA-256 documento ufficiale: <span class="hash">a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782</span></p>
+<p class="meta">SHA-256 documento ufficiale: <span class="hash">a263d98e2e19d94c0f380f9fa5ec96107df084a80715fd3f66c41ceb873dee93</span></p>
 <div class="parties">
 <p>Tra</p>
 <p><strong>AUTSYS S.R.L.S.</strong>, con sede in Genova (GE), Via Camilla 3/6, C.F. e P. IVA 02847140999, REA GE-515278, di seguito “AUTSYS” o “Fornitore”;</p>
@@ -268,7 +268,7 @@ hr{margin:28px 0}.hash{font-family:monospace;font-size:12px;word-break:break-all
 <p>Non sono comprese automaticamente nell’abbonamento le attività che, per natura, dimensione, costo o impegno richiesto, costituiscano una fornitura o un progetto autonomo o straordinario. Rientrano, a titolo esemplificativo, la fornitura di hardware, l’acquisto di licenze o servizi di terzi, le trasferte e relative spese, nonché sviluppi o progetti di rilevanza tale da richiedere un distinto accordo economico.</p>
 <p>Prima dell’avvio di attività straordinarie con costi aggiuntivi, AUTSYS ne informa EOLO e ne concorda le condizioni.</p>
 <h2>3. Corrispettivo</h2>
-<p>Il corrispettivo dell’abbonamento è pari a <strong>€ 200,00 + IVA.</strong></p>
+<p>Il corrispettivo dell’abbonamento è pari a <strong>€ 250,00 + IVA.</strong></p>
 <p>Il pagamento avviene tramite il sistema elettronico messo a disposizione da AUTSYS. Con la sottoscrizione, il Cliente autorizza l’addebito ricorrente sul metodo di pagamento indicato, secondo la periodicità mensile prevista.</p>
 <h2>4. Durata e rinnovo automatico</h2>
 <p>L’abbonamento ha durata mensile e si rinnova automaticamente di mese in mese fino alla sua cessazione. Non è previsto un periodo minimo obbligatorio di permanenza, salvo diverso accordo scritto tra le Parti.</p>
@@ -314,11 +314,11 @@ hr{margin:28px 0}.hash{font-family:monospace;font-size:12px;word-break:break-all
 });
 
 
-const EOLO_PRICE_ID = "price_1UJ7rwS1PEz956OxpDl62giQ";
+const EOLO_PRICE_ID = "price_1UJAjBS1PEz956OxyguUscyD";
 const EOLO_TAX_RATE_ID = "txr_1UJ7xeS1PEz956Ox2ZVQHlNr";
 const EOLO_CONTRACT = "2026/001";
 const EOLO_CONTRACT_REVISION = "REV.0";
-const EOLO_CONTRACT_SHA256 = "a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782";
+const EOLO_CONTRACT_SHA256 = "a263d98e2e19d94c0f380f9fa5ec96107df084a80715fd3f66c41ceb873dee93";
 
 app.get("/subscribe/eolo/2026-001", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -326,8 +326,8 @@ app.get("/subscribe/eolo/2026-001", (req, res) => {
 body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:10px 0 4px;font-weight:600}input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:6px}.check{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px;font-weight:400}.check input{width:auto;margin-right:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}@media(max-width:700px){.grid,.grid3{grid-template-columns:1fr}}
 </style></head><body>
 <h1>Collaborazione tecnica continuativa EOLO</h1>
-<p class="price">€ 200,00 + IVA 22% / mese</p>
-<p>Totale al pagamento: <strong>€ 244,00 al mese</strong>.</p>
+<p class="price">€ 250,00 + IVA 22% / mese</p>
+<p>Totale al pagamento: <strong>€ 305,00 al mese</strong>.</p>
 
 <form method="post" action="/subscribe/eolo/2026-001">
 <div class="box">
@@ -358,7 +358,7 @@ body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24p
 <p class="meta">Inserire almeno uno tra Codice destinatario SDI e PEC. L'email indicata riceverà copia delle condizioni accettate e le comunicazioni relative alla sottoscrizione.</p>
 </div>
 
-<div class="box"><h2>Condizioni contrattuali</h2><p><strong>2026/001 - AUTSYS SRLS AI - 24/09/2026 - REV.0</strong></p><p><a href="/legal/autsys-srls/2026-001" target="_blank" rel="noopener">Apri le condizioni complete</a></p><p class="meta">SHA-256: a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353dcc0ac09030782</p></div>
+<div class="box"><h2>Condizioni contrattuali</h2><p><strong>2026/001 - AUTSYS SRLS AI - 24/09/2026 - REV.0</strong></p><p><a href="/legal/autsys-srls/2026-001" target="_blank" rel="noopener">Apri le condizioni complete</a></p><p class="meta">SHA-256: a263d98e2e19d94c0f380f9fa5ec96107df084a80715fd3f66c41ceb873dee93</p></div>
 <label class="check"><input type="checkbox" name="general" value="yes" required> Ho letto e accetto le condizioni contrattuali 2026/001 REV.0.</label>
 <label class="check"><input type="checkbox" name="specific" value="yes" required> Approvo specificamente le clausole 4, 6, 14 e 18 relative a rinnovo automatico, sospensione per mancato pagamento, responsabilità e foro competente.</label>
 <button type="submit">Accetta e vai al pagamento Stripe</button>
