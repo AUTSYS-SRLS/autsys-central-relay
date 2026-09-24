@@ -323,7 +323,7 @@ const EOLO_CONTRACT_SHA256 = "a4608f2137ea1c80743ec06061676ab36038bae21b36fb5353
 app.get("/subscribe/eolo/2026-001", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abbonamento EOLO</title><style>
-body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:10px 0 4px;font-weight:600}input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:6px}.check{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px;font-weight:400}.check input{width:auto;margin-right:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}@media(max-width:700px){.grid,.grid3{grid-template-columns:1fr}}
+body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24px;line-height:1.5;color:#111}.box{border:1px solid #ddd;border-radius:10px;padding:18px;margin:20px 0}label{display:block;margin:10px 0 4px;font-weight:600}input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:6px}.check{display:block;margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:8px;font-weight:400}.check input{width:auto;margin-right:8px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:14px 18px;font-size:16px;cursor:pointer}.price{font-size:28px;font-weight:700}.meta{font-size:13px;color:#555}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}@media(max-width:700px){.grid,.grid3{grid-template-columns:1fr}}
 </style></head><body>
 <h1>Collaborazione tecnica continuativa EOLO</h1>
 <p class="price">€ 200,00 + IVA 22% / mese</p>
@@ -332,6 +332,13 @@ body{font-family:Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 24p
 <form method="post" action="/subscribe/eolo/2026-001">
 <div class="box">
 <h2>Dati aziendali e fatturazione elettronica</h2>
+<label>Tipo di acquirente</label>
+<select name="buyer_type" required style="width:100%;box-sizing:border-box;padding:10px;border:1px solid #bbb;border-radius:6px">
+<option value="">Seleziona</option>
+<option value="business">Azienda / impresa / professionista con P.IVA</option>
+<option value="consumer">Privato consumatore</option>
+</select>
+<p class="meta"><strong>Per questo servizio EOLO l'acquisto deve essere effettuato come azienda.</strong></p>
 <label>Ragione sociale / denominazione</label><input name="company_name" required maxlength="140" value="TERMOMECCANICA &quot;EOLO&quot; DI AUTELLI ING. FRANCESCO">
 <div class="grid">
 <div><label>Partita IVA</label><input name="vat_number" required maxlength="20" autocomplete="off"></div>
@@ -364,6 +371,7 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
   }
 
   const clean = (v, max=254) => String(v || "").trim().slice(0,max);
+  const buyerType = clean(req.body?.buyer_type, 20);
   const companyName = clean(req.body?.company_name, 140);
   const vatNumber = clean(req.body?.vat_number, 20).replace(/\s+/g,"").toUpperCase();
   const fiscalCode = clean(req.body?.fiscal_code, 20).replace(/\s+/g,"").toUpperCase();
@@ -375,8 +383,15 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
   const pec = clean(req.body?.pec, 254).toLowerCase();
   const billingEmail = clean(req.body?.billing_email, 254).toLowerCase();
 
+  if (buyerType !== "business") {
+    return res.status(400).send("Per la sottoscrizione EOLO l'acquirente deve essere un'azienda / soggetto con Partita IVA.");
+  }
   if (!companyName || !vatNumber || !addressLine1 || !postalCode || !city || !province || !billingEmail) {
     return res.status(400).send("Dati aziendali e di fatturazione incompleti.");
+  }
+  const normalizedVat = vatNumber.startsWith("IT") ? vatNumber : ("IT" + vatNumber);
+  if (!/^IT[0-9]{11}$/.test(normalizedVat)) {
+    return res.status(400).send("Partita IVA italiana non valida: inserire 11 cifre (eventualmente precedute da IT).");
   }
   if (!sdiCode && !pec) {
     return res.status(400).send("Inserire almeno Codice destinatario SDI oppure PEC.");
@@ -394,8 +409,9 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
     accepted_general: true,
     accepted_specific_articles: ["4","6","14","18"],
     accepted_at: acceptedAt,
+    buyer_type: buyerType,
     company_name: companyName,
-    vat_number: vatNumber,
+    vat_number: normalizedVat,
     fiscal_code: fiscalCode,
     address_line1: addressLine1,
     postal_code: postalCode,
@@ -411,12 +427,33 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
   console.log("LEGAL_ACCEPTANCE", JSON.stringify(receipt));
 
   try {
+    const customer = await stripePost("/v1/customers", {
+      "name": companyName,
+      "email": billingEmail,
+      "address[line1]": addressLine1,
+      "address[postal_code]": postalCode,
+      "address[city]": city,
+      "address[state]": province,
+      "address[country]": "IT",
+      "metadata[buyer_type]": buyerType,
+      "metadata[fiscal_code]": fiscalCode,
+      "metadata[sdi_code]": sdiCode,
+      "metadata[pec]": pec,
+      "metadata[contract_number]": EOLO_CONTRACT,
+      "metadata[contract_revision]": EOLO_CONTRACT_REVISION
+    });
+
+    const taxId = await stripePost("/v1/customers/" + customer.id + "/tax_ids", {
+      "type": "eu_vat",
+      "value": normalizedVat
+    });
+
     const session = await stripePost("/v1/checkout/sessions", {
       "mode": "subscription",
       "line_items[0][price]": EOLO_PRICE_ID,
       "line_items[0][quantity]": "1",
       "line_items[0][tax_rates][0]": EOLO_TAX_RATE_ID,
-      "customer_email": billingEmail,
+      "customer": customer.id,
       "billing_address_collection": "required",
       "tax_id_collection[enabled]": "true",
       "name_collection[business][enabled]": "true",
@@ -429,7 +466,9 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
       "metadata[contract_sha256]": EOLO_CONTRACT_SHA256,
       "metadata[accepted_at]": acceptedAt,
       "metadata[company_name]": companyName,
-      "metadata[vat_number]": vatNumber,
+      "metadata[vat_number]": normalizedVat,
+      "metadata[stripe_customer_id]": customer.id,
+      "metadata[stripe_tax_id_id]": taxId.id,
       "metadata[fiscal_code]": fiscalCode,
       "metadata[address_line1]": addressLine1,
       "metadata[postal_code]": postalCode,
@@ -443,7 +482,9 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
       "subscription_data[metadata][contract_revision]": EOLO_CONTRACT_REVISION,
       "subscription_data[metadata][contract_sha256]": EOLO_CONTRACT_SHA256,
       "subscription_data[metadata][accepted_at]": acceptedAt,
-      "subscription_data[metadata][vat_number]": vatNumber,
+      "subscription_data[metadata][vat_number]": normalizedVat,
+      "subscription_data[metadata][stripe_customer_id]": customer.id,
+      "subscription_data[metadata][stripe_tax_id_id]": taxId.id,
       "subscription_data[metadata][sdi_code]": sdiCode,
       "subscription_data[metadata][pec]": pec,
       "subscription_data[metadata][billing_email]": billingEmail
@@ -454,7 +495,9 @@ app.post("/subscribe/eolo/2026-001", async (req, res) => {
       revision: EOLO_CONTRACT_REVISION,
       accepted_at: acceptedAt,
       billing_email: billingEmail,
-      vat_number: vatNumber,
+      vat_number: normalizedVat,
+      stripe_customer_id: customer.id,
+      stripe_tax_id_id: taxId.id,
       sdi_code: sdiCode,
       pec
     }));
