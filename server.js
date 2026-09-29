@@ -592,7 +592,7 @@ app.post("/v1/manager/bootstrap", (req, res) => {
   const bindingSecret = String(body.binding_secret || "").trim();
   if (!isUuid(installationId)) return res.status(400).json({ ok: false, error: "invalid_installation_id" });
   if (productCode !== "AUTSYS_MANAGER") return res.status(400).json({ ok: false, error: "invalid_product" });
-  if (platform !== "ANDROID") return res.status(400).json({ ok: false, error: "invalid_platform" });
+  if (!["ANDROID", "WINDOWS"].includes(platform)) return res.status(400).json({ ok: false, error: "invalid_platform" });
   if (!/^[0-9A-Za-z._-]{1,64}$/.test(managerVersion)) return res.status(400).json({ ok: false, error: "invalid_manager_version" });
   if (!isBindingSecret(bindingSecret)) return res.status(400).json({ ok: false, error: "invalid_binding" });
   const issuedAt = nowSec();
@@ -600,7 +600,7 @@ app.post("/v1/manager/bootstrap", (req, res) => {
   const payload = {
     installation_id: installationId,
     purpose: "manager-relay",
-    platform: "ANDROID",
+    platform,
     token_version: 2,
     binding_sha256: sha256Text(bindingSecret),
     iat: issuedAt,
