@@ -11,6 +11,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import express from "express";
+import { loadApprovedManagerBindings, isApprovedManagerBinding, isApprovedManagerSession } from "./manager-bindings.js";
 
 const app = express();
 const port = Number(process.env.PORT || 10010);
@@ -19,6 +20,10 @@ const PROTOCOL = 2; // backward-compatible with Manager Android 1.0.0.17
 
 const CENTRAL_KEY = String(process.env.AUTSYS_CENTRAL_RELAY_KEY || "");
 const MANAGER_TOKEN_KEY = String(process.env.AUTSYS_MANAGER_TOKEN_KEY || "");
+// Only a trusted administrator may provision these binding SHA-256 values.
+// No bootstrap request or client-originated event may auto-enroll itself.
+// An absent registry rejects Manager authentication (fail-closed).
+const APPROVED_MANAGER_BINDINGS = loadApprovedManagerBindings(process.env.AUTSYS_MANAGER_BINDINGS_JSON);
 const STRIPE_AUTSYS_FULL_KEY = String(process.env.STRIPE_AUTSYS_FULL_KEY || "");
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "");
 const AUTSYS_CONTRACT_FROM = String(process.env.AUTSYS_CONTRACT_FROM || "AUTSYS S.R.L.S. <contratti@autsys-srls.com>");
@@ -181,11 +186,11 @@ function requireCentral(req, res, next) {
 function requireManager(req, res, next) {
   const payload = verifyManagerToken(bearer(req));
   if (!payload) return res.status(401).json({ ok: false, error: "unauthorized" });
-  if (payload.binding_sha256) {
-    const binding = String(req.get("x-autsys-binding") || "").trim();
-    if (!isBindingSecret(binding) || !safeEqualText(sha256Text(binding), payload.binding_sha256)) {
-      return res.status(401).json({ ok: false, error: "invalid_binding" });
-    }
+  const binding = String(req.get("x-autsys-binding") || "").trim();
+  // A valid HMAC alone is insufficient: old/self-enrolled tokens are not
+  // authorization, and revocation must take effect before token expiration.
+  if (!isApprovedManagerSession(APPROVED_MANAGER_BINDINGS, payload, binding)) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
   }
   req.autsysManager = payload;
   next();
@@ -595,6 +600,9 @@ app.post("/v1/manager/bootstrap", (req, res) => {
   if (!["ANDROID", "WINDOWS"].includes(platform)) return res.status(400).json({ ok: false, error: "invalid_platform" });
   if (!/^[0-9A-Za-z._-]{1,64}$/.test(managerVersion)) return res.status(400).json({ ok: false, error: "invalid_manager_version" });
   if (!isBindingSecret(bindingSecret)) return res.status(400).json({ ok: false, error: "invalid_binding" });
+  if (!isApprovedManagerBinding(APPROVED_MANAGER_BINDINGS, installationId, platform, bindingSecret)) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
   const issuedAt = nowSec();
   const expiresAt = issuedAt + MANAGER_TOKEN_TTL_SEC;
   const payload = {
