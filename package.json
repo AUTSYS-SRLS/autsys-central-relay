@@ -9,6 +9,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "redis": "^5.0.0"
   }
 }
