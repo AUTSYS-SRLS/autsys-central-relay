@@ -52,5 +52,5 @@ export function createBindingStore({ url, approved = new Map() }) {
   async function close() {
     if (client.isOpen) await client.quit();
   }
-  return { verify, verifyToken, close };
+  return { verify, verifyToken, ready, close };
 }
