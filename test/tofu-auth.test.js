@@ -28,6 +28,7 @@ if (!url) {
   test("TOFU integration requires AUTSYS_TEST_REDIS_URL", { skip: "Redis integration service is not configured" }, () => {});
 } else {
   let redis;
+  const stores = [];
   let processHandle;
   let base;
 
@@ -39,6 +40,7 @@ if (!url) {
   });
   after(async () => {
     if (processHandle) await stop();
+    for (const store of stores) await store.close();
     if (redis?.isReady) {
       await redis.del(IDs.map(id => prefix + id));
       await redis.quit();
@@ -124,6 +126,7 @@ if (!url) {
   test("atomic first key wins and changing it or its platform is rejected", async () => {
     const store1 = createBindingStore({url});
     const store2 = createBindingStore({url});
+    stores.push(store1,store2);
     assert.equal(await store1.verify(IDs[0], "WINDOWS", A), true);
     assert.equal(await store2.verify(IDs[0], "WINDOWS", A), true);
     assert.equal(await store1.verify(IDs[0], "WINDOWS", B), false);
