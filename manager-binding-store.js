@@ -17,7 +17,7 @@ const fingerprint = (secret) => crypto.createHash("sha256").update(secret).diges
 
 export function createBindingStore({ url, approved = new Map() }) {
   if (!url) throw new Error("binding_store_url_required");
-  const client = createClient({ url, disableOfflineQueue: true, socket: { connectTimeout: 4000 } });
+  const client = createClient({ url, disableOfflineQueue: true, socket: { connectTimeout: 4000, reconnectStrategy: false } });
   client.on("error", () => {});
   let connecting;
   function ready() {
