@@ -69,7 +69,7 @@ if (!url) {
       stdio: "ignore",
       env: {
         ...process.env,
-        PORT: p.slice(1),
+        PORT: p,
         AUTSYS_CENTRAL_RELAY_KEY: CENTRAL,
         AUTSYS_MANAGER_TOKEN_KEY: TOKEN,
         AUTSYS_MANAGER_BINDINGS_JSON: "",
