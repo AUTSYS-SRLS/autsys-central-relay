@@ -49,5 +49,8 @@ export function createBindingStore({ url, approved = new Map() }) {
     return verify(payload.installation_id, payload.platform, secret);
   }
 
-  return { verify, verifyToken };
+  async function close() {
+    if (client.isOpen) await client.quit();
+  }
+  return { verify, verifyToken, close };
 }
