@@ -11,6 +11,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import express from "express";
+import { loadApprovedManagerBindings, isApprovedManagerBinding, isApprovedManagerSession } from "./manager-bindings.js";
+import { createBindingStore } from "./manager-binding-store.js";
 
 const app = express();
 const port = Number(process.env.PORT || 10010);
@@ -19,6 +21,18 @@ const PROTOCOL = 2; // backward-compatible with Manager Android 1.0.0.17
 
 const CENTRAL_KEY = String(process.env.AUTSYS_CENTRAL_RELAY_KEY || "");
 const MANAGER_TOKEN_KEY = String(process.env.AUTSYS_MANAGER_TOKEN_KEY || "");
+// Preapproved registry remains available for explicit policy and legacy tests.
+// In TOFU mode the first binding per installation is pinned atomically in Render Key Value.
+// First-use authenticity is not established cryptographically: accepted policy tradeoff.
+const APPROVED_MANAGER_BINDINGS = loadApprovedManagerBindings(process.env.AUTSYS_MANAGER_BINDINGS_JSON);
+const MANAGER_BINDING_MODE = String(process.env.AUTSYS_MANAGER_BINDING_MODE || "PREAPPROVED").toUpperCase();
+if (!["PREAPPROVED", "TOFU"].includes(MANAGER_BINDING_MODE)) throw new Error("invalid_manager_binding_mode");
+const MANAGER_BINDING_STORE = MANAGER_BINDING_MODE === "TOFU"
+  ? createBindingStore({
+      url: process.env.AUTSYS_MANAGER_BINDINGS_REDIS_URL,
+      approved: APPROVED_MANAGER_BINDINGS
+    })
+  : null;
 const STRIPE_AUTSYS_FULL_KEY = String(process.env.STRIPE_AUTSYS_FULL_KEY || "");
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "");
 const AUTSYS_CONTRACT_FROM = String(process.env.AUTSYS_CONTRACT_FROM || "AUTSYS S.R.L.S. <contratti@autsys-srls.com>");
@@ -178,17 +192,21 @@ function requireCentral(req, res, next) {
   next();
 }
 
-function requireManager(req, res, next) {
+async function requireManager(req, res, next) {
   const payload = verifyManagerToken(bearer(req));
   if (!payload) return res.status(401).json({ ok: false, error: "unauthorized" });
-  if (payload.binding_sha256) {
-    const binding = String(req.get("x-autsys-binding") || "").trim();
-    if (!isBindingSecret(binding) || !safeEqualText(sha256Text(binding), payload.binding_sha256)) {
-      return res.status(401).json({ ok: false, error: "invalid_binding" });
-    }
+  const binding = String(req.get("x-autsys-binding") || "").trim();
+  try {
+    const accepted = MANAGER_BINDING_STORE
+      ? await MANAGER_BINDING_STORE.verifyToken(payload, binding)
+      : isApprovedManagerSession(APPROVED_MANAGER_BINDINGS, payload, binding);
+    if (!accepted) return res.status(401).json({ ok: false, error: "unauthorized" });
+    req.autsysManager = payload;
+    return next();
+  } catch (err) {
+    console.error("MANAGER_BINDING_STORE_ERROR", err?.message || "unavailable");
+    return res.status(503).json({ ok: false, error: "manager_binding_store_unavailable" });
   }
-  req.autsysManager = payload;
-  next();
 }
 
 const rateBuckets = new Map();
@@ -580,7 +598,7 @@ app.get("/subscribe/eolo/2026-001/success", (req, res) => {
   res.send(`<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Abbonamento attivato</title><style>body{font-family:Arial,sans-serif;max-width:760px;margin:50px auto;padding:0 24px;line-height:1.5;color:#111}.ok{border:1px solid #ddd;border-radius:10px;padding:22px}</style></head><body><div class="ok"><h1>Pagamento completato</h1><p>Grazie. Stripe ha completato il flusso di pagamento per l'abbonamento EOLO.</p><p>Riferimento contratto: <strong>2026/001 REV.0</strong></p><p>Sessione Stripe: <code>${sessionId.replace(/[<>&"]/g,"")}</code></p></div></body></html>`);
 });
 
-app.post("/v1/manager/bootstrap", (req, res) => {
+app.post("/v1/manager/bootstrap", async (req, res) => {
   if (!MANAGER_TOKEN_KEY) return res.status(503).json({ ok: false, error: "relay_not_configured" });
   if (!allowBootstrap(req)) return res.status(429).json({ ok: false, error: "bootstrap_rate_limited" });
   const body = asObject(req.body);
@@ -595,6 +613,16 @@ app.post("/v1/manager/bootstrap", (req, res) => {
   if (!["ANDROID", "WINDOWS"].includes(platform)) return res.status(400).json({ ok: false, error: "invalid_platform" });
   if (!/^[0-9A-Za-z._-]{1,64}$/.test(managerVersion)) return res.status(400).json({ ok: false, error: "invalid_manager_version" });
   if (!isBindingSecret(bindingSecret)) return res.status(400).json({ ok: false, error: "invalid_binding" });
+  let accepted;
+  try {
+    accepted = MANAGER_BINDING_STORE
+      ? await MANAGER_BINDING_STORE.verify(installationId, platform, bindingSecret)
+      : isApprovedManagerBinding(APPROVED_MANAGER_BINDINGS, installationId, platform, bindingSecret);
+  } catch (err) {
+    console.error("MANAGER_BINDING_STORE_ERROR", err?.message || "unavailable");
+    return res.status(503).json({ ok: false, error: "manager_binding_store_unavailable" });
+  }
+  if (!accepted) return res.status(401).json({ ok: false, error: "unauthorized" });
   const issuedAt = nowSec();
   const expiresAt = issuedAt + MANAGER_TOKEN_TTL_SEC;
   const payload = {
@@ -839,7 +867,8 @@ app.get("/diag", requireCentral, (req, res) => {
     package_cache_items: packagesByRelease.size,
     package_cache_bytes: cachedBytes,
     package_tickets: packageTickets.size,
-    persistence: "memory+ephemeral_package_files",
+    persistence: MANAGER_BINDING_STORE ? "durable_key_value_binding_registry+ephemeral_transport" : "memory+ephemeral_package_files",
+    manager_binding_mode: MANAGER_BINDING_MODE,
     authoritative: false
   });
 });
@@ -851,6 +880,13 @@ app.use((err, req, res, next) => {
   return res.status(500).json({ ok: false, error: "internal_error" });
 });
 
-app.listen(port, () => {
-  console.log(`AUTSYS Central Relay ${VERSION} listening on port ${port}`);
-});
+try {
+  // Do not activate a new TOFU Relay without its durable registry online.
+  if (MANAGER_BINDING_STORE) await MANAGER_BINDING_STORE.ready();
+  app.listen(port, () => {
+    console.log(`AUTSYS Central Relay ${VERSION} listening on port ${port}`);
+  });
+} catch (err) {
+  console.error("MANAGER_BINDING_STORE_STARTUP_FAILED", err?.message || "unavailable");
+  process.exit(1);
+}
