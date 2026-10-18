@@ -16,7 +16,7 @@ import { createBindingStore } from "./manager-binding-store.js";
 
 const app = express();
 const port = Number(process.env.PORT || 10010);
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const PROTOCOL = 2; // backward-compatible with Manager Android 1.0.0.17
 
 const CENTRAL_KEY = String(process.env.AUTSYS_CENTRAL_RELAY_KEY || "");
