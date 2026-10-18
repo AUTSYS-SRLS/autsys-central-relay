@@ -13,6 +13,7 @@ import path from "path";
 import express from "express";
 import { loadApprovedManagerBindings, isApprovedManagerBinding, isApprovedManagerSession } from "./manager-bindings.js";
 import { createBindingStore } from "./manager-binding-store.js";
+import { createLicenseRegistry } from "./license-registry.js";
 
 const app = express();
 const port = Number(process.env.PORT || 10010);
@@ -33,6 +34,22 @@ const MANAGER_BINDING_STORE = MANAGER_BINDING_MODE === "TOFU"
       approved: APPROVED_MANAGER_BINDINGS
     })
   : null;
+// An inventory authenticated with CENTRAL_KEY is authoritative for license state.
+// Enrollment events remain possible before the Centrale issues the first product license.
+const MANAGER_LICENSE_ENFORCEMENT = String(process.env.AUTSYS_RELAY_LICENSE_ENFORCEMENT || "OFF").toUpperCase();
+if (!["OFF", "ON"].includes(MANAGER_LICENSE_ENFORCEMENT)) throw new Error("invalid_manager_license_enforcement");
+const MANAGER_LICENSE_REGISTRY = MANAGER_BINDING_STORE ? createLicenseRegistry(MANAGER_BINDING_STORE) : null;
+if (MANAGER_LICENSE_ENFORCEMENT === "ON" && !MANAGER_LICENSE_REGISTRY) {
+  throw new Error("manager_license_registry_requires_binding_store");
+}
+const PROVISIONAL_EVENT_KINDS = new Set([
+  "manager_startup_sync", "manager_heartbeat", "bootstrap_plan_request",
+  "license_request", "license_status_request", "license_result_received",
+  "product_installed", "product_uninstalled", "update_result"
+]);
+const PROVISIONAL_COMMAND_KINDS = new Set([
+  "license_result", "license_status_result", "bootstrap_plan_result"
+]);
 const STRIPE_AUTSYS_FULL_KEY = String(process.env.STRIPE_AUTSYS_FULL_KEY || "");
 const RESEND_API_KEY = String(process.env.RESEND_API_KEY || "");
 const AUTSYS_CONTRACT_FROM = String(process.env.AUTSYS_CONTRACT_FROM || "AUTSYS S.R.L.S. <contratti@autsys-srls.com>");
@@ -202,6 +219,9 @@ async function requireManager(req, res, next) {
       : isApprovedManagerSession(APPROVED_MANAGER_BINDINGS, payload, binding);
     if (!accepted) return res.status(401).json({ ok: false, error: "unauthorized" });
     req.autsysManager = payload;
+    req.autsysLicenseState = MANAGER_LICENSE_ENFORCEMENT === "ON"
+      ? await MANAGER_LICENSE_REGISTRY.verify(payload.installation_id, payload.platform)
+      : { authorized: true, reason: "license_enforcement_disabled" };
     return next();
   } catch (err) {
     console.error("MANAGER_BINDING_STORE_ERROR", err?.message || "unavailable");
@@ -623,6 +643,9 @@ app.post("/v1/manager/bootstrap", async (req, res) => {
     return res.status(503).json({ ok: false, error: "manager_binding_store_unavailable" });
   }
   if (!accepted) return res.status(401).json({ ok: false, error: "unauthorized" });
+  // Bootstrap itself remains possible for a new installation: its product license
+  // is normally issued AFTER the first Manager <-> Centrale handshake.
+  // Unlicensed Managers only receive onboarding/license commands afterwards.
   const issuedAt = nowSec();
   const expiresAt = issuedAt + MANAGER_TOKEN_TTL_SEC;
   const payload = {
@@ -653,6 +676,9 @@ app.post("/v1/manager/events", requireManager, (req, res) => {
   if (!body) return res.status(400).json({ ok: false, error: "invalid_body" });
   const eventId = String(body.event_id || "").trim();
   const kind = String(body.kind || "").trim();
+  if (!req.autsysLicenseState.authorized && !PROVISIONAL_EVENT_KINDS.has(kind)) {
+    return res.status(403).json({ ok: false, error: "active_product_license_required" });
+  }
   const payload = asObject(body.payload);
   const signature = typeof body.signature === "string" ? body.signature : "";
   const ts = Number.isInteger(body.ts) ? body.ts : nowSec();
@@ -800,6 +826,35 @@ app.get("/v1/download/:ticket", (req, res) => {
   stream.pipe(res);
 });
 
+// AUTSYS Centrale is the only trusted source of installation/license relationships.
+// This registry is persistent and independent of in-memory transport queues.
+app.post("/v1/central/license-inventory", requireCentral, async (req, res) => {
+  if (!MANAGER_LICENSE_REGISTRY) return res.status(503).json({ ok: false, error: "license_registry_unavailable" });
+  try {
+    const result = await MANAGER_LICENSE_REGISTRY.replace(req.body);
+    return res.status(200).json({ ok: true, ...result });
+  } catch (err) {
+    if (String(err?.message || "").startsWith("invalid_") ||
+        String(err?.message || "").startsWith("duplicate_") ||
+        String(err?.message || "").startsWith("license_inventory_too_large")) {
+      return res.status(400).json({ ok: false, error: String(err.message) });
+    }
+    console.error("LICENSE_REGISTRY_WRITE_FAILED", err?.message || "unavailable");
+    return res.status(503).json({ ok: false, error: "license_registry_unavailable" });
+  }
+});
+
+app.get("/v1/central/license-inventory/status", requireCentral, async (req, res) => {
+  if (!MANAGER_LICENSE_REGISTRY) return res.status(503).json({ ok: false, error: "license_registry_unavailable" });
+  try {
+    return res.json({ ok: true, ...await MANAGER_LICENSE_REGISTRY.status(),
+      enforcement: MANAGER_LICENSE_ENFORCEMENT });
+  } catch (err) {
+    console.error("LICENSE_REGISTRY_READ_FAILED", err?.message || "unavailable");
+    return res.status(503).json({ ok: false, error: "license_registry_unavailable" });
+  }
+});
+
 app.post("/v1/central/commands", requireCentral, (req, res) => {
   purgeExpired();
   const body = asObject(req.body);
@@ -826,7 +881,9 @@ app.post("/v1/central/commands", requireCentral, (req, res) => {
 app.get("/v1/manager/commands", requireManager, (req, res) => {
   purgeExpired();
   const installationId = req.autsysManager.installation_id;
-  const list = commandsByInstallation.get(installationId) || [];
+  const available = commandsByInstallation.get(installationId) || [];
+  const list = req.autsysLicenseState.authorized ? available :
+    available.filter(command => PROVISIONAL_COMMAND_KINDS.has(command.kind));
   return res.json({ ok: true, count: list.length, items: list });
 });
 
@@ -869,6 +926,7 @@ app.get("/diag", requireCentral, (req, res) => {
     package_tickets: packageTickets.size,
     persistence: MANAGER_BINDING_STORE ? "durable_key_value_binding_registry+ephemeral_transport" : "memory+ephemeral_package_files",
     manager_binding_mode: MANAGER_BINDING_MODE,
+    manager_license_enforcement: MANAGER_LICENSE_ENFORCEMENT,
     authoritative: false
   });
 });
