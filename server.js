@@ -880,6 +880,13 @@ app.use((err, req, res, next) => {
   return res.status(500).json({ ok: false, error: "internal_error" });
 });
 
-app.listen(port, () => {
-  console.log(`AUTSYS Central Relay ${VERSION} listening on port ${port}`);
-});
+try {
+  // Do not activate a new TOFU Relay without its durable registry online.
+  if (MANAGER_BINDING_STORE) await MANAGER_BINDING_STORE.ready();
+  app.listen(port, () => {
+    console.log(`AUTSYS Central Relay ${VERSION} listening on port ${port}`);
+  });
+} catch (err) {
+  console.error("MANAGER_BINDING_STORE_STARTUP_FAILED", err?.message || "unavailable");
+  process.exit(1);
+}
