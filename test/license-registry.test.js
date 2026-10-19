@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createClient } from "redis";
-import { validateLicenseInventory, managerLicenseState } from "../license-registry.js";
+import { createLicenseRegistry, validateLicenseInventory, managerLicenseState } from "../license-registry.js";
 
 const UUID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const OTHER = "ffffffff-ffff-4fff-8fff-ffffffffffff";
@@ -134,4 +134,97 @@ if (!redisUrl) {
     assert.equal(restrictedAgain.status,403);
     assert.equal((await redis.ttl(redisKeys[0])),-1);
   });
+  test("late older inventory cannot restore revoked product licenses", async () => {
+    const auth={authorization:"Bearer "+CENTRAL};
+    const t=Date.now()+2000;
+    const active=inventory("ACTIVE");
+    active.generated_at_ms=t;
+    const revoked=inventory("REVOKED");
+    revoked.generated_at_ms=t+200;
+    const lateOld=inventory("ACTIVE");
+    lateOld.generated_at_ms=t+100;
+
+    assert.equal((await request("/v1/central/license-inventory","POST",active,auth)).status,200);
+    const published=await request("/v1/central/license-inventory","POST",revoked,auth);
+    assert.equal(published.status,200);
+    assert.equal(published.data.action,"updated");
+    const saved=await redis.get(redisKeys[0]);
+
+    const rejected=await request("/v1/central/license-inventory","POST",lateOld,auth);
+    assert.equal(rejected.status,409);
+    assert.equal(rejected.data.error,"stale_license_inventory");
+    assert.equal(await redis.get(redisKeys[0]),saved,"stale inventory overwrote a revocation");
+    assert.equal(managerLicenseState(JSON.parse(saved),UUID,"WINDOWS").authorized,false);
+  });
+
+  test("repeated identical sync is idempotent; conflicting same timestamp is blocked", async () => {
+    const auth={authorization:"Bearer "+CENTRAL};
+    const state=inventory("REVOKED");
+    state.generated_at_ms=Date.now()+6000;
+    const first=await request("/v1/central/license-inventory","POST",state,auth);
+    assert.equal(first.status,200);
+    assert.equal(first.data.action,"updated");
+    const original=await redis.get(redisKeys[0]);
+    for(let i=0;i<3;i++) {
+      const repeated=await request("/v1/central/license-inventory","POST",structuredClone(state),auth);
+      assert.equal(repeated.status,200);
+      assert.equal(repeated.data.action,"duplicate");
+      assert.equal(await redis.get(redisKeys[0]),original,"duplicate unexpectedly rewrote metadata");
+    }
+    const conflicting=structuredClone(state);
+    conflicting.installations[0].licenses[1].status="ACTIVE";
+    const conflict=await request("/v1/central/license-inventory","POST",conflicting,auth);
+    assert.equal(conflict.status,409);
+    assert.equal(conflict.data.error,"conflicting_license_inventory_timestamp");
+    assert.equal(await redis.get(redisKeys[0]),original,"same-version conflict restored a license");
+
+    const staleRepeat=structuredClone(state);
+    staleRepeat.generated_at_ms-=1;
+    const stale=await request("/v1/central/license-inventory","POST",staleRepeat,auth);
+    assert.equal(stale.status,409);
+    assert.equal(await redis.get(redisKeys[0]),original);
+  });
+
+  test("concurrent writers from separate Redis connections preserve newest revocation", async () => {
+    await redis.del(redisKeys[0]);
+    const conn1=createClient({url:redisUrl});
+    const conn2=createClient({url:redisUrl});
+    conn1.on("error",()=>{});
+    conn2.on("error",()=>{});
+    await Promise.all([conn1.connect(),conn2.connect()]);
+    try {
+      const registry1=createLicenseRegistry({ready:async()=>conn1});
+      const registry2=createLicenseRegistry({ready:async()=>conn2});
+      const t=Date.now()+10000;
+      const batches=[];
+      for(let i=0;i<12;i++){
+        const s=inventory(i===11?"REVOKED":"ACTIVE");
+        s.generated_at_ms=t+i;
+        batches.push((i%2===0?registry1:registry2).replace(s));
+      }
+      const results=await Promise.allSettled(batches.reverse());
+      assert.ok(results.some(r=>r.status==="fulfilled"));
+      assert.ok(results.every(r=>r.status==="fulfilled" ||
+        (r.status==="rejected" && r.reason?.message==="stale_license_inventory")));
+      const stored=JSON.parse(await redis.get(redisKeys[0]));
+      assert.equal(stored.generated_at_ms,t+11);
+      assert.equal(managerLicenseState(stored,UUID,"WINDOWS").authorized,false);
+      assert.equal(stored.installations[UUID].licenses[1].status,"REVOKED");
+
+      // All same-generation writes with identical content return one
+      // creation/update at most, without changing the persisted snapshot.
+      const saved=await redis.get(redisKeys[0]);
+      const identical=inventory("REVOKED");
+      identical.generated_at_ms=t+11;
+      const duplicateResults=await Promise.all([
+        registry1.replace(structuredClone(identical)),
+        registry2.replace(structuredClone(identical))
+      ]);
+      assert.deepEqual(duplicateResults.map(r=>r.action),["duplicate","duplicate"]);
+      assert.equal(await redis.get(redisKeys[0]),saved);
+    } finally {
+      await Promise.all([conn1.quit(),conn2.quit()]);
+    }
+  });
+
 }
