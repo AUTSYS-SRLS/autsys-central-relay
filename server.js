@@ -834,6 +834,9 @@ app.post("/v1/central/license-inventory", requireCentral, async (req, res) => {
     const result = await MANAGER_LICENSE_REGISTRY.replace(req.body);
     return res.status(200).json({ ok: true, ...result });
   } catch (err) {
+    if (err?.status === 409) {
+      return res.status(409).json({ ok: false, error: String(err.message) });
+    }
     if (String(err?.message || "").startsWith("invalid_") ||
         String(err?.message || "").startsWith("duplicate_") ||
         String(err?.message || "").startsWith("license_inventory_too_large")) {
