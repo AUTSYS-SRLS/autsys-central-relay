@@ -9,6 +9,49 @@ const PLATFORMS = new Set(["ANDROID", "WINDOWS"]);
 const MAX_DEVICES = 5000;
 const MAX_LICENSES = 15000;
 
+// Redis runs this script atomically: inspection and conditional write cannot
+// interleave with a competing Centrale sync from another Relay instance.
+// Legacy stored snapshots (without additional metadata) remain compatible.
+const ATOMIC_REPLACE_IF_NEWER = \`
+local old_json = redis.call('GET', KEYS[1])
+
+local function equal_content(a, b)
+  if type(a) ~= type(b) then return false end
+  if type(a) ~= 'table' then return a == b end
+  for key, value in pairs(a) do
+    if not equal_content(value, b[key]) then return false end
+  end
+  for key in pairs(b) do
+    if a[key] == nil then return false end
+  end
+  return true
+end
+
+if old_json then
+  local ok, old = pcall(cjson.decode, old_json)
+  if not ok or type(old) ~= 'table' or old.schema ~= 1
+      or type(old.generated_at_ms) ~= 'number'
+      or old.generated_at_ms <= 0 or type(old.installations) ~= 'table' then
+    return redis.error_reply('stored_license_registry_corrupt')
+  end
+
+  local incoming = cjson.decode(ARGV[1])
+  if incoming.generated_at_ms < old.generated_at_ms then
+    return 'stale'
+  end
+  if incoming.generated_at_ms == old.generated_at_ms then
+    if equal_content(incoming.installations, old.installations) then
+      return 'duplicate'
+    end
+    return 'conflict'
+  end
+end
+
+redis.call('SET', KEYS[1], ARGV[1])
+return old_json and 'updated' or 'created'
+\`;
+
+
 export function validateLicenseInventory(input) {
   if (!input || typeof input !== "object" || Array.isArray(input) ||
       input.schema !== 1 || !Number.isSafeInteger(input.generated_at_ms) ||
@@ -79,7 +122,6 @@ export function managerLicenseState(inventory, installationId, platform, at = Da
 
 export function createLicenseRegistry(bindingStore) {
   if (!bindingStore || typeof bindingStore.ready !== "function") throw new Error("binding_store_required");
-  let lastSeen;
   async function get() {
     const conn = await bindingStore.ready();
     const raw = await conn.get(KEY);
@@ -93,12 +135,24 @@ export function createLicenseRegistry(bindingStore) {
   async function replace(snapshot) {
     const data = validateLicenseInventory(snapshot);
     const conn = await bindingStore.ready();
-    // An identical snapshot can be resent; only AUTSYS Centrale has write access.
-    await conn.set(KEY, JSON.stringify(data));
-    lastSeen = data.generated_at_ms;
+    // GET + comparison + SET are one indivisible operation on Redis.
+    // An identical retry at the same timestamp must not refresh synced_at_ms.
+    const action = await conn.eval(ATOMIC_REPLACE_IF_NEWER, {
+      keys: [KEY],
+      arguments: [JSON.stringify(data)]
+    });
+    if (action === "stale" || action === "conflict") {
+      const err = new Error(action === "stale"
+        ? "stale_license_inventory" : "conflicting_license_inventory_timestamp");
+      err.status = 409;
+      throw err;
+    }
+    if (!["created", "updated", "duplicate"].includes(action)) {
+      throw new Error("invalid_license_registry_write_result");
+    }
     return { devices: Object.keys(data.installations).length,
       licenses: Object.values(data.installations).reduce((n, d) => n + d.licenses.length, 0),
-      generated_at_ms: data.generated_at_ms };
+      generated_at_ms: data.generated_at_ms, action };
   }
   async function verify(installationId, platform) {
     return managerLicenseState(await get(), installationId, platform);
