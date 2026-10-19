@@ -12,7 +12,7 @@ const MAX_LICENSES = 15000;
 // Redis runs this script atomically: inspection and conditional write cannot
 // interleave with a competing Centrale sync from another Relay instance.
 // Legacy stored snapshots (without additional metadata) remain compatible.
-const ATOMIC_REPLACE_IF_NEWER = \`
+const ATOMIC_REPLACE_IF_NEWER = `
 local old_json = redis.call('GET', KEYS[1])
 
 local function equal_content(a, b)
@@ -49,7 +49,7 @@ end
 
 redis.call('SET', KEYS[1], ARGV[1])
 return old_json and 'updated' or 'created'
-\`;
+`;
 
 
 export function validateLicenseInventory(input) {
