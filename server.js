@@ -48,7 +48,7 @@ if (!MAILBOX_REDIS_URL) throw new Error("relay_messages_redis_url_required");
 const MAILBOX_REDIS = createClient({url: MAILBOX_REDIS_URL, disableOfflineQueue: true,
   socket: {connectTimeout: 4000, reconnectStrategy: false}});
 MAILBOX_REDIS.on("error", (err) => console.error("MAILBOX_REDIS_ERROR", err?.message || "unavailable"));
-const MAILBOX = createMessageStore(MAILBOX_REDIS);
+const MAILBOX = createMessageStore(MAILBOX_REDIS, { prefix: process.env.AUTSYS_RELAY_MESSAGES_PREFIX || "autsys:relay-mailbox:v1:" });
 
 if (MANAGER_LICENSE_ENFORCEMENT === "ON" && !MANAGER_LICENSE_REGISTRY) {
   throw new Error("manager_license_registry_requires_binding_store");
