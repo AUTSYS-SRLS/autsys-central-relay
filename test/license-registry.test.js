@@ -83,7 +83,9 @@ if (!redisUrl) {
     proc=spawn(process.execPath,["server.js"],{
       cwd:repoRoot,
       stdio:"ignore",
-      env:{...process.env,PORT:String(port),
+      env:{...process.env,
+      AUTSYS_RELAY_MESSAGES_REDIS_URL: process.env.AUTSYS_TEST_REDIS_URL,
+      AUTSYS_RELAY_MESSAGES_PREFIX: "test:relay:license-registry.test",PORT:String(port),
         AUTSYS_CENTRAL_RELAY_KEY:CENTRAL,
         AUTSYS_MANAGER_TOKEN_KEY:MANAGER,
         AUTSYS_MANAGER_BINDING_MODE:"TOFU",
@@ -228,3 +230,4 @@ if (!redisUrl) {
   });
 
 }
+

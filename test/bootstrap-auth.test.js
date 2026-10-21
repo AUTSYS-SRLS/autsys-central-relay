@@ -47,6 +47,8 @@ async function startRelay() {
     cwd: repo,
     env: {
       ...process.env,
+      AUTSYS_RELAY_MESSAGES_REDIS_URL: process.env.AUTSYS_TEST_REDIS_URL,
+      AUTSYS_RELAY_MESSAGES_PREFIX: "test:relay:bootstrap-auth.test",
       PORT: String(port),
       AUTSYS_MANAGER_TOKEN_KEY: MANAGER_KEY,
       AUTSYS_CENTRAL_RELAY_KEY: CENTRAL_KEY,
@@ -178,3 +180,4 @@ test('event injection using an impersonated token is rejected', async () => {
   }, authorization(signedToken(ANDROID_ID, 'ANDROID', ATTACKER_SECRET), ATTACKER_SECRET));
   assert.equal(forged.status, 401);
 });
+

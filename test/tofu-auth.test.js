@@ -71,6 +71,8 @@ if (!url) {
       stdio: "ignore",
       env: {
         ...process.env,
+      AUTSYS_RELAY_MESSAGES_REDIS_URL: process.env.AUTSYS_TEST_REDIS_URL,
+      AUTSYS_RELAY_MESSAGES_PREFIX: "test:relay:tofu-auth.test",
         PORT: p,
         AUTSYS_CENTRAL_RELAY_KEY: CENTRAL,
         AUTSYS_MANAGER_TOKEN_KEY: TOKEN,
@@ -175,3 +177,4 @@ if (!url) {
     assert.equal((await http("/v1/manager/commands", "GET", null, auth(IDs[3], C, "ANDROID"))).status, 200);
   });
 }
+
