@@ -14,6 +14,7 @@ import express from "express";
 import { loadApprovedManagerBindings, isApprovedManagerBinding, isApprovedManagerSession } from "./manager-bindings.js";
 import { createBindingStore } from "./manager-binding-store.js";
 import { createLicenseRegistry } from "./license-registry.js";
+import { createMessageStore } from "./message-store.js";
 
 const app = express();
 const port = Number(process.env.PORT || 10010);
@@ -256,12 +257,19 @@ function allowBootstrap(req) {
   return b.count <= 20;
 }
 
-const events = [];
-const eventIds = new Set();
-const commandsByInstallation = new Map();
-const commandIds = new Set();
+// Never acknowledge acceptance into process-local memory. No volatile fallback.
+const MESSAGE_STORE = createMessageStore({
+  url: process.env.AUTSYS_RELAY_MESSAGES_REDIS_URL || process.env.AUTSYS_MANAGER_BINDINGS_REDIS_URL,
+  prefix: process.env.AUTSYS_RELAY_MESSAGES_PREFIX || "autsys:central-relay:messages:v1"
+});
+const queueRoute = handler => async (req, res) => {
+  try { return await handler(req, res); }
+  catch (err) {
+    console.error("MESSAGE_STORE_ERROR", err?.message || "unavailable");
+    return res.status(503).json({ ok: false, error: "message_store_unavailable" });
+  }
+};
 const packagesByRelease = new Map();
-const packageTickets = new Map();
 
 function safeFilename(v) {
   const raw = String(v || "package.zip").trim();
@@ -279,21 +287,6 @@ function packagePath(releaseId) {
 
 function purgeExpired() {
   const now = nowSec();
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    if (events[i].expires_at <= now) {
-      eventIds.delete(events[i].event_id);
-      events.splice(i, 1);
-    }
-  }
-  for (const [installationId, list] of commandsByInstallation.entries()) {
-    const kept = list.filter((x) => x.expires_at > now);
-    for (const x of list) if (x.expires_at <= now) commandIds.delete(x.command_id);
-    if (kept.length === 0) commandsByInstallation.delete(installationId);
-    else commandsByInstallation.set(installationId, kept);
-  }
-  for (const [ticket, item] of packageTickets.entries()) {
-    if (item.expires_at <= now) packageTickets.delete(ticket);
-  }
   for (const [releaseId, item] of packagesByRelease.entries()) {
     if (item.expires_at <= now) {
       packagesByRelease.delete(releaseId);
@@ -303,6 +296,11 @@ function purgeExpired() {
 }
 
 setInterval(purgeExpired, 60_000).unref();
+// Prune Redis indexes even when no clients are polling. Reads and writes also
+// enforce expiry atomically, so delayed housekeeping cannot deliver stale data.
+setInterval(() => MESSAGE_STORE.stats().catch(err => {
+  console.error("MESSAGE_STORE_CLEANUP_FAILED", err?.message || "unavailable");
+}), 60_000).unref();
 try { fs.mkdirSync(PACKAGE_ROOT, { recursive: true }); } catch {}
 
 app.get("/", (req, res) => {
@@ -669,7 +667,7 @@ app.post("/v1/manager/bootstrap", async (req, res) => {
   });
 });
 
-app.post("/v1/manager/events", requireManager, (req, res) => {
+app.post("/v1/manager/events", requireManager, queueRoute(async (req, res) => {
   purgeExpired();
   const installationId = req.autsysManager.installation_id;
   const body = asObject(req.body);
@@ -683,36 +681,28 @@ app.post("/v1/manager/events", requireManager, (req, res) => {
   const signature = typeof body.signature === "string" ? body.signature : "";
   const ts = Number.isInteger(body.ts) ? body.ts : nowSec();
   if (!isSafeId(eventId) || !isSafeId(kind) || !payload) return res.status(400).json({ ok: false, error: "invalid_event" });
-  if (eventIds.has(eventId)) return res.status(200).json({ ok: true, duplicate: true, event_id: eventId });
-  if (events.length >= MAX_EVENTS) return res.status(503).json({ ok: false, error: "queue_full" });
   const ttl = Number.isInteger(body.ttl_sec) ? Math.max(60, Math.min(body.ttl_sec, DEFAULT_EVENT_TTL_SEC)) : DEFAULT_EVENT_TTL_SEC;
   const item = { event_id: eventId, installation_id: installationId, kind, ts, received_at: nowSec(), expires_at: nowSec() + ttl, payload, signature };
-  events.push(item);
-  eventIds.add(eventId);
+  const result = await MESSAGE_STORE.enqueue("events", item, ttl, MAX_EVENTS);
+  if (result === "duplicate") return res.status(200).json({ ok: true, duplicate: true, event_id: eventId });
+  if (result === "full") return res.status(503).json({ ok: false, error: "queue_full" });
   return res.status(202).json({ ok: true, event_id: eventId });
-});
+}));
 
-app.get("/v1/central/events", requireCentral, (req, res) => {
+app.get("/v1/central/events", requireCentral, queueRoute(async (req, res) => {
   purgeExpired();
   const requested = Number.parseInt(String(req.query.limit || "50"), 10);
   const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, MAX_BATCH)) : 50;
-  return res.json({ ok: true, count: Math.min(events.length, limit), items: events.slice(0, limit) });
-});
+  const items = await MESSAGE_STORE.read("events", "", limit);
+  return res.json({ ok: true, count: items.length, items });
+}));
 
-app.post("/v1/central/events/ack", requireCentral, (req, res) => {
+app.post("/v1/central/events/ack", requireCentral, queueRoute(async (req, res) => {
   const ids = Array.isArray(req.body?.event_ids) ? req.body.event_ids.filter(isSafeId).slice(0, MAX_BATCH) : [];
   if (ids.length === 0) return res.status(400).json({ ok: false, error: "invalid_event_ids" });
-  const wanted = new Set(ids);
-  let removed = 0;
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    if (wanted.has(events[i].event_id)) {
-      eventIds.delete(events[i].event_id);
-      events.splice(i, 1);
-      removed += 1;
-    }
-  }
+  const removed = await MESSAGE_STORE.ack("events", ids);
   return res.json({ ok: true, removed });
-});
+}));
 
 app.get("/v1/central/packages/:releaseId", requireCentral, (req, res) => {
   purgeExpired();
@@ -791,7 +781,7 @@ app.put("/v1/central/packages/:releaseId", requireCentral, (req, res) => {
   req.pipe(out);
 });
 
-app.post("/v1/central/package-tickets", requireCentral, (req, res) => {
+app.post("/v1/central/package-tickets", requireCentral, queueRoute(async (req, res) => {
   purgeExpired();
   const body = asObject(req.body);
   if (!body) return res.status(400).json({ ok: false, error: "invalid_body" });
@@ -804,16 +794,16 @@ app.post("/v1/central/package-tickets", requireCentral, (req, res) => {
   const ttl = Math.max(60, Math.min(requested, MAX_PACKAGE_TTL_SEC));
   const ticket = crypto.randomBytes(32).toString("base64url");
   const expiresAt = nowSec() + ttl;
-  packageTickets.set(ticket, { release_id: releaseId, installation_id: installationId, expires_at: expiresAt });
+  await MESSAGE_STORE.putTicket(ticket, { release_id: releaseId, installation_id: installationId, expires_at: expiresAt });
   pkg.expires_at = Math.max(pkg.expires_at, expiresAt);
   return res.status(201).json({ ok: true, release_id: releaseId, installation_id: installationId, expires_at: expiresAt, download_url: `${publicBase(req)}/v1/download/${ticket}` });
-});
+}));
 
-app.get("/v1/download/:ticket", (req, res) => {
+app.get("/v1/download/:ticket", queueRoute(async (req, res) => {
   purgeExpired();
   const ticket = String(req.params.ticket || "").trim();
   if (!/^[A-Za-z0-9_-]{40,128}$/.test(ticket)) return res.status(404).end();
-  const access = packageTickets.get(ticket);
+  const access = await MESSAGE_STORE.getTicket(ticket);
   if (!access || access.expires_at <= nowSec()) return res.status(404).end();
   const pkg = packagesByRelease.get(access.release_id);
   if (!pkg || !fs.existsSync(pkg.path)) return res.status(404).end();
@@ -824,10 +814,10 @@ app.get("/v1/download/:ticket", (req, res) => {
   const stream = fs.createReadStream(pkg.path);
   stream.on("error", () => { if (!res.headersSent) res.status(503).end(); else res.destroy(); });
   stream.pipe(res);
-});
+}));
 
 // AUTSYS Centrale is the only trusted source of installation/license relationships.
-// This registry is persistent and independent of in-memory transport queues.
+// This registry is persistent and independent of durable transport queues.
 app.post("/v1/central/license-inventory", requireCentral, async (req, res) => {
   if (!MANAGER_LICENSE_REGISTRY) return res.status(503).json({ ok: false, error: "license_registry_unavailable" });
   try {
@@ -858,7 +848,7 @@ app.get("/v1/central/license-inventory/status", requireCentral, async (req, res)
   }
 });
 
-app.post("/v1/central/commands", requireCentral, (req, res) => {
+app.post("/v1/central/commands", requireCentral, queueRoute(async (req, res) => {
   purgeExpired();
   const body = asObject(req.body);
   if (!body) return res.status(400).json({ ok: false, error: "invalid_body" });
@@ -870,49 +860,33 @@ app.post("/v1/central/commands", requireCentral, (req, res) => {
   if (!isSafeId(commandId) || !isSafeId(installationId) || !isSafeId(kind) || !payload || !signature) {
     return res.status(400).json({ ok: false, error: "invalid_command" });
   }
-  if (commandIds.has(commandId)) return res.status(200).json({ ok: true, duplicate: true, command_id: commandId });
-  const list = commandsByInstallation.get(installationId) || [];
-  if (list.length >= MAX_COMMANDS_PER_INSTALLATION) return res.status(503).json({ ok: false, error: "queue_full" });
   const ttl = Number.isInteger(body.ttl_sec) ? Math.max(60, Math.min(body.ttl_sec, DEFAULT_COMMAND_TTL_SEC)) : DEFAULT_COMMAND_TTL_SEC;
   const item = { command_id: commandId, installation_id: installationId, kind, created_at: nowSec(), expires_at: nowSec() + ttl, payload, signature };
-  list.push(item);
-  commandsByInstallation.set(installationId, list);
-  commandIds.add(commandId);
+  const result = await MESSAGE_STORE.enqueue("commands", item, ttl, MAX_COMMANDS_PER_INSTALLATION);
+  if (result === "duplicate") return res.status(200).json({ ok: true, duplicate: true, command_id: commandId });
+  if (result === "full") return res.status(503).json({ ok: false, error: "queue_full" });
   return res.status(202).json({ ok: true, command_id: commandId });
-});
+}));
 
-app.get("/v1/manager/commands", requireManager, (req, res) => {
+app.get("/v1/manager/commands", requireManager, queueRoute(async (req, res) => {
   purgeExpired();
   const installationId = req.autsysManager.installation_id;
-  const available = commandsByInstallation.get(installationId) || [];
+  const available = await MESSAGE_STORE.read("commands", installationId, MAX_COMMANDS_PER_INSTALLATION);
   const list = req.autsysLicenseState.authorized ? available :
     available.filter(command => PROVISIONAL_COMMAND_KINDS.has(command.kind));
   return res.json({ ok: true, count: list.length, items: list });
-});
+}));
 
-app.post("/v1/central/commands/ack", requireCentral, (req, res) => {
+app.post("/v1/central/commands/ack", requireCentral, queueRoute(async (req, res) => {
   const ids = Array.isArray(req.body?.command_ids) ? req.body.command_ids.filter(isSafeId).slice(0, MAX_BATCH) : [];
   if (ids.length === 0) return res.status(400).json({ ok: false, error: "invalid_command_ids" });
-  const wanted = new Set(ids);
-  let removed = 0;
-  for (const [installationId, list] of commandsByInstallation.entries()) {
-    const kept = [];
-    for (const item of list) {
-      if (wanted.has(item.command_id)) {
-        commandIds.delete(item.command_id);
-        removed += 1;
-      } else kept.push(item);
-    }
-    if (kept.length === 0) commandsByInstallation.delete(installationId);
-    else commandsByInstallation.set(installationId, kept);
-  }
+  const removed = await MESSAGE_STORE.ack("commands", ids);
   return res.json({ ok: true, removed });
-});
+}));
 
-app.get("/diag", requireCentral, (req, res) => {
+app.get("/diag", requireCentral, queueRoute(async (req, res) => {
   purgeExpired();
-  let commandCount = 0;
-  for (const list of commandsByInstallation.values()) commandCount += list.length;
+  const queues = await MESSAGE_STORE.stats();
   let cachedBytes = 0;
   for (const item of packagesByRelease.values()) cachedBytes += item.size_bytes;
   return res.json({
@@ -921,18 +895,18 @@ app.get("/diag", requireCentral, (req, res) => {
     version: VERSION,
     protocol: PROTOCOL,
     ts: nowSec(),
-    manager_events_queued: events.length,
-    manager_installations_with_commands: commandsByInstallation.size,
-    commands_queued: commandCount,
+    manager_events_queued: queues.events,
+    manager_installations_with_commands: queues.installations,
+    commands_queued: queues.commands,
     package_cache_items: packagesByRelease.size,
     package_cache_bytes: cachedBytes,
-    package_tickets: packageTickets.size,
-    persistence: MANAGER_BINDING_STORE ? "durable_key_value_binding_registry+ephemeral_transport" : "memory+ephemeral_package_files",
+    package_tickets: queues.tickets,
+    persistence: MANAGER_BINDING_STORE ? "durable_key_value_binding_registry+durable_message_queues+ephemeral_packages" : "durable_message_queues+ephemeral_packages",
     manager_binding_mode: MANAGER_BINDING_MODE,
     manager_license_enforcement: MANAGER_LICENSE_ENFORCEMENT,
     authoritative: false
   });
-});
+}));
 
 app.use((req, res) => res.status(404).json({ ok: false, error: "not_found" }));
 app.use((err, req, res, next) => {
@@ -944,10 +918,12 @@ app.use((err, req, res, next) => {
 try {
   // Do not activate a new TOFU Relay without its durable registry online.
   if (MANAGER_BINDING_STORE) await MANAGER_BINDING_STORE.ready();
+  await MESSAGE_STORE.ready();
   app.listen(port, () => {
     console.log(`AUTSYS Central Relay ${VERSION} listening on port ${port}`);
   });
 } catch (err) {
-  console.error("MANAGER_BINDING_STORE_STARTUP_FAILED", err?.message || "unavailable");
+  console.error("RELAY_STORE_STARTUP_FAILED", err?.message || "unavailable");
   process.exit(1);
 }
+

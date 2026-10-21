@@ -29,4 +29,7 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --ignore-scripts
+      # The crash/restart test owns a second, disposable Redis with AOF enabled.
+      - run: sudo apt-get update -qq && sudo apt-get install -y redis-server
       - run: npm test
+
