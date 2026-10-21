@@ -882,6 +882,114 @@ app.post("/v1/central/commands/ack", requireCentral, async(req,res)=>{
   catch(err){console.error("RELAY_COMMAND_ACK_FAILED",err?.message);return res.status(503).json({ok:false,error:"relay_message_store_unavailable"});}
 });
 
+
+// Centrale-only, strictly read-only inspection of durable Redis mailboxes.
+// Uses MAILBOX.list()'s read-only Lua script; never ACKs or purges messages.
+function relayReadOnlyInspectOptions(req) {
+  const installation=String(req.query.installation_id || "").trim();
+  const kind=String(req.query.kind || "").trim();
+  const requestedLimit=String(req.query.limit ?? "50");
+  const requestedOffset=String(req.query.offset ?? "0");
+  if ((installation && !isSafeId(installation)) || (kind && !isSafeId(kind)) ||
+      !/^\d{1,3}$/.test(requestedLimit) ||
+      !/^\d{1,5}$/.test(requestedOffset)) return null;
+  const limit=Number(requestedLimit),offset=Number(requestedOffset);
+  if (limit<1 || limit>100 || offset>1000) return null;
+  return {installation,kind,limit,offset};
+}
+async function relayReadOnlyInspect(req,res,collection) {
+  const opts=relayReadOnlyInspectOptions(req);
+  if (!opts) return res.status(400).json({ok:false,error:"invalid_inspection_filter"});
+  try {
+    const scanLimit=10000;
+    const data=await MAILBOX.list(collection,{
+      scope:opts.installation,limit:scanLimit
+    });
+    const matches=data.filter(item=>!opts.kind || item.kind===opts.kind);
+    const isEvents=collection==="events";
+    const metadata=matches.slice(opts.offset,opts.offset+opts.limit).map(item=>
+      isEvents?{
+        event_id:item.event_id,installation_id:item.installation_id,
+        kind:item.kind,ts:item.ts,received_at:item.received_at,expires_at:item.expires_at
+      }:{
+        command_id:item.command_id,installation_id:item.installation_id,
+        kind:item.kind,created_at:item.created_at,expires_at:item.expires_at
+      });
+    const globalCount=await MAILBOX.count(collection);
+    const capped=data.length>=scanLimit;
+    const nextOffset=opts.offset+metadata.length;
+    return res.json({
+      ok:true,source:collection,items:metadata,count:metadata.length,
+      filtered_total:matches.length,filtered_total_is_lower_bound:capped,
+      global_pending_count:globalCount,next_offset:nextOffset<matches.length?nextOffset:null,
+      snapshot_at:nowSec(),read_only:true,ack_sent:false,ttl_purge_called:false,
+      payloads_included:false,signature_included:false
+    });
+  } catch(_err) {return res.status(503).json({ok:false,error:"redis_readonly_inspection_unavailable"});}
+}
+app.get("/v1/central/events/inspect",requireCentral,(req,res)=>
+  relayReadOnlyInspect(req,res,"events"));
+app.get("/v1/central/commands/inspect",requireCentral,(req,res)=>
+  relayReadOnlyInspect(req,res,"commands"));
+
+// Redis data-plane summary. Read-only SCAN, EXISTS, PTTL, STRLEN, TYPE and
+// ZCOUNT; no raw device ID, key name, inventory contents, secrets or payloads.
+app.get("/v1/central/redis/inspect",requireCentral,async(_req,res)=>{
+  try {
+    if(!MAILBOX_REDIS.isReady)throw new Error("durable_redis_not_ready");
+    const stateClient=MANAGER_BINDING_STORE
+      ?await MANAGER_BINDING_STORE.ready():MAILBOX_REDIS;
+    async function countMatching(client,glob) {
+      let count=0,capped=false;
+      for await(const page of client.scanIterator({MATCH:glob,COUNT:100})){
+        const part=Array.isArray(page)?page:[page];
+        count+=part.length;
+        if(count>=10000){count=10000;capped=true;break;}
+      }
+      return {count,capped};
+    }
+    const [bindings,mailboxKeys]=await Promise.all([
+      countMatching(stateClient,"autsys:manager-binding:v1:*"),
+      countMatching(MAILBOX_REDIS,"autsys:relay-mailbox:v1:*")
+    ]);
+    const inventory="autsys:central-relay:license-inventory:v1";
+    const exists=(await stateClient.exists(inventory))===1;
+    const info=exists?await Promise.all([
+      stateClient.type(inventory),stateClient.pTTL(inventory),
+      stateClient.strLen(inventory)
+    ]):["none",null,0];
+    async function pending(kind){
+      const key="autsys:relay-mailbox:v1:"+kind+":pending";
+      const typ=await MAILBOX_REDIS.type(key);
+      return {
+        present:typ!=="none",type:typ,
+        pending:typ==="zset"
+          ?await MAILBOX_REDIS.zCount(key,nowSec()+1,"+inf"):null
+      };
+    }
+    const [events,commands]=await Promise.all([
+      pending("events"),pending("commands")
+    ]);
+    return res.json({
+      ok:true,read_only:true,ack_sent:false,ttl_purge_called:false,
+      raw_keys_returned:false,payloads_included:false,credentials_exposed:false,
+      redis:{
+        ready:true,
+        manager_binding_keys:bindings,
+        license_inventory:{present:exists,type:info[0],
+          ttl_ms:info[1],bytes:info[0]==="string"?info[2]:null},
+        relay_mailbox_keys:mailboxKeys,
+        durable_events:events,durable_commands:commands
+      },
+      current_transport:{mode:"redis_persistent",
+        events:await MAILBOX.count("events"),
+        commands:await MAILBOX.count("commands")}
+    });
+  }catch(_err){
+    return res.status(503).json({ok:false,error:"redis_readonly_inspection_unavailable"});
+  }
+});
+
 app.get("/diag", requireCentral, async (req, res) => {
   purgeExpired();
   let eventCount, commandCount, installationsCount;
