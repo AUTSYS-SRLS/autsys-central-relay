@@ -11,6 +11,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import express from "express";
+import { createClient } from "redis";
+import { createMessageStore } from "./message-store.js";
 import { loadApprovedManagerBindings, isApprovedManagerBinding, isApprovedManagerSession } from "./manager-bindings.js";
 import { createBindingStore } from "./manager-binding-store.js";
 import { createLicenseRegistry } from "./license-registry.js";
@@ -39,6 +41,15 @@ const MANAGER_BINDING_STORE = MANAGER_BINDING_MODE === "TOFU"
 const MANAGER_LICENSE_ENFORCEMENT = String(process.env.AUTSYS_RELAY_LICENSE_ENFORCEMENT || "OFF").toUpperCase();
 if (!["OFF", "ON"].includes(MANAGER_LICENSE_ENFORCEMENT)) throw new Error("invalid_manager_license_enforcement");
 const MANAGER_LICENSE_REGISTRY = MANAGER_BINDING_STORE ? createLicenseRegistry(MANAGER_BINDING_STORE) : null;
+// The transport must never acknowledge an event before durable Redis acceptance.
+// A missing/unavailable Redis store prevents startup, rather than silently falling back to RAM.
+const MAILBOX_REDIS_URL = process.env.AUTSYS_RELAY_MESSAGES_REDIS_URL || process.env.AUTSYS_MANAGER_BINDINGS_REDIS_URL;
+if (!MAILBOX_REDIS_URL) throw new Error("relay_messages_redis_url_required");
+const MAILBOX_REDIS = createClient({url: MAILBOX_REDIS_URL, disableOfflineQueue: true,
+  socket: {connectTimeout: 4000, reconnectStrategy: false}});
+MAILBOX_REDIS.on("error", (err) => console.error("MAILBOX_REDIS_ERROR", err?.message || "unavailable"));
+const MAILBOX = createMessageStore(MAILBOX_REDIS, { prefix: process.env.AUTSYS_RELAY_MESSAGES_PREFIX || "autsys:relay-mailbox:v1:" });
+
 if (MANAGER_LICENSE_ENFORCEMENT === "ON" && !MANAGER_LICENSE_REGISTRY) {
   throw new Error("manager_license_registry_requires_binding_store");
 }
@@ -256,10 +267,6 @@ function allowBootstrap(req) {
   return b.count <= 20;
 }
 
-const events = [];
-const eventIds = new Set();
-const commandsByInstallation = new Map();
-const commandIds = new Set();
 const packagesByRelease = new Map();
 const packageTickets = new Map();
 
@@ -279,18 +286,6 @@ function packagePath(releaseId) {
 
 function purgeExpired() {
   const now = nowSec();
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    if (events[i].expires_at <= now) {
-      eventIds.delete(events[i].event_id);
-      events.splice(i, 1);
-    }
-  }
-  for (const [installationId, list] of commandsByInstallation.entries()) {
-    const kept = list.filter((x) => x.expires_at > now);
-    for (const x of list) if (x.expires_at <= now) commandIds.delete(x.command_id);
-    if (kept.length === 0) commandsByInstallation.delete(installationId);
-    else commandsByInstallation.set(installationId, kept);
-  }
   for (const [ticket, item] of packageTickets.entries()) {
     if (item.expires_at <= now) packageTickets.delete(ticket);
   }
@@ -669,49 +664,41 @@ app.post("/v1/manager/bootstrap", async (req, res) => {
   });
 });
 
-app.post("/v1/manager/events", requireManager, (req, res) => {
-  purgeExpired();
+app.post("/v1/manager/events", requireManager, async (req, res) => {
   const installationId = req.autsysManager.installation_id;
   const body = asObject(req.body);
   if (!body) return res.status(400).json({ ok: false, error: "invalid_body" });
   const eventId = String(body.event_id || "").trim();
   const kind = String(body.kind || "").trim();
-  if (!req.autsysLicenseState.authorized && !PROVISIONAL_EVENT_KINDS.has(kind)) {
+  if (!req.autsysLicenseState.authorized && !PROVISIONAL_EVENT_KINDS.has(kind))
     return res.status(403).json({ ok: false, error: "active_product_license_required" });
-  }
   const payload = asObject(body.payload);
   const signature = typeof body.signature === "string" ? body.signature : "";
   const ts = Number.isInteger(body.ts) ? body.ts : nowSec();
-  if (!isSafeId(eventId) || !isSafeId(kind) || !payload) return res.status(400).json({ ok: false, error: "invalid_event" });
-  if (eventIds.has(eventId)) return res.status(200).json({ ok: true, duplicate: true, event_id: eventId });
-  if (events.length >= MAX_EVENTS) return res.status(503).json({ ok: false, error: "queue_full" });
-  const ttl = Number.isInteger(body.ttl_sec) ? Math.max(60, Math.min(body.ttl_sec, DEFAULT_EVENT_TTL_SEC)) : DEFAULT_EVENT_TTL_SEC;
-  const item = { event_id: eventId, installation_id: installationId, kind, ts, received_at: nowSec(), expires_at: nowSec() + ttl, payload, signature };
-  events.push(item);
-  eventIds.add(eventId);
-  return res.status(202).json({ ok: true, event_id: eventId });
+  if (!isSafeId(eventId) || !isSafeId(kind) || !payload) return res.status(400).json({ok:false,error:"invalid_event"});
+  const ttl = Number.isInteger(body.ttl_sec) ? Math.max(60,Math.min(body.ttl_sec,DEFAULT_EVENT_TTL_SEC)) : DEFAULT_EVENT_TTL_SEC;
+  const item = {event_id:eventId,installation_id:installationId,kind,ts,received_at:nowSec(),expires_at:nowSec()+ttl,payload,signature};
+  try {
+    const outcome = await MAILBOX.enqueue("events",item,{id:eventId,max:MAX_EVENTS});
+    if(outcome==="duplicate")return res.status(200).json({ok:true,duplicate:true,event_id:eventId});
+    if(outcome==="full")return res.status(503).json({ok:false,error:"queue_full"});
+    if(outcome!=="accepted")throw new Error("unexpected_enqueue_result");
+    return res.status(202).json({ok:true,event_id:eventId});
+  }catch(err){console.error("RELAY_EVENT_STORE_FAILED",err?.message);return res.status(503).json({ok:false,error:"relay_message_store_unavailable"});}
 });
 
-app.get("/v1/central/events", requireCentral, (req, res) => {
-  purgeExpired();
-  const requested = Number.parseInt(String(req.query.limit || "50"), 10);
-  const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, MAX_BATCH)) : 50;
-  return res.json({ ok: true, count: Math.min(events.length, limit), items: events.slice(0, limit) });
+app.get("/v1/central/events", requireCentral, async (req,res)=>{
+  const requested=Number.parseInt(String(req.query.limit||"50"),10);
+  const limit=Number.isFinite(requested)?Math.max(1,Math.min(requested,MAX_BATCH)):50;
+  try{const items=await MAILBOX.list("events",{limit});return res.json({ok:true,count:items.length,items});}
+  catch(err){console.error("RELAY_EVENT_READ_FAILED",err?.message);return res.status(503).json({ok:false,error:"relay_message_store_unavailable"});}
 });
 
-app.post("/v1/central/events/ack", requireCentral, (req, res) => {
-  const ids = Array.isArray(req.body?.event_ids) ? req.body.event_ids.filter(isSafeId).slice(0, MAX_BATCH) : [];
-  if (ids.length === 0) return res.status(400).json({ ok: false, error: "invalid_event_ids" });
-  const wanted = new Set(ids);
-  let removed = 0;
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    if (wanted.has(events[i].event_id)) {
-      eventIds.delete(events[i].event_id);
-      events.splice(i, 1);
-      removed += 1;
-    }
-  }
-  return res.json({ ok: true, removed });
+app.post("/v1/central/events/ack", requireCentral, async(req,res)=>{
+  const ids=Array.isArray(req.body?.event_ids)?req.body.event_ids.filter(isSafeId).slice(0,MAX_BATCH):[];
+  if(ids.length===0)return res.status(400).json({ok:false,error:"invalid_event_ids"});
+  try{const removed=await MAILBOX.ack("events",ids);return res.json({ok:true,removed});}
+  catch(err){console.error("RELAY_EVENT_ACK_FAILED",err?.message);return res.status(503).json({ok:false,error:"relay_message_store_unavailable"});}
 });
 
 app.get("/v1/central/packages/:releaseId", requireCentral, (req, res) => {
@@ -858,61 +845,156 @@ app.get("/v1/central/license-inventory/status", requireCentral, async (req, res)
   }
 });
 
-app.post("/v1/central/commands", requireCentral, (req, res) => {
-  purgeExpired();
-  const body = asObject(req.body);
-  if (!body) return res.status(400).json({ ok: false, error: "invalid_body" });
-  const commandId = String(body.command_id || "").trim();
-  const installationId = String(body.installation_id || "").trim();
-  const kind = String(body.kind || "").trim();
-  const payload = asObject(body.payload);
-  const signature = typeof body.signature === "string" ? body.signature : "";
-  if (!isSafeId(commandId) || !isSafeId(installationId) || !isSafeId(kind) || !payload || !signature) {
-    return res.status(400).json({ ok: false, error: "invalid_command" });
-  }
-  if (commandIds.has(commandId)) return res.status(200).json({ ok: true, duplicate: true, command_id: commandId });
-  const list = commandsByInstallation.get(installationId) || [];
-  if (list.length >= MAX_COMMANDS_PER_INSTALLATION) return res.status(503).json({ ok: false, error: "queue_full" });
-  const ttl = Number.isInteger(body.ttl_sec) ? Math.max(60, Math.min(body.ttl_sec, DEFAULT_COMMAND_TTL_SEC)) : DEFAULT_COMMAND_TTL_SEC;
-  const item = { command_id: commandId, installation_id: installationId, kind, created_at: nowSec(), expires_at: nowSec() + ttl, payload, signature };
-  list.push(item);
-  commandsByInstallation.set(installationId, list);
-  commandIds.add(commandId);
-  return res.status(202).json({ ok: true, command_id: commandId });
+app.post("/v1/central/commands", requireCentral, async(req,res)=>{
+  const body=asObject(req.body);
+  if(!body)return res.status(400).json({ok:false,error:"invalid_body"});
+  const commandId=String(body.command_id||"").trim();
+  const installationId=String(body.installation_id||"").trim();
+  const kind=String(body.kind||"").trim();
+  const payload=asObject(body.payload);
+  const signature=typeof body.signature==="string"?body.signature:"";
+  if(!isSafeId(commandId)||!isSafeId(installationId)||!isSafeId(kind)||!payload||!signature)
+    return res.status(400).json({ok:false,error:"invalid_command"});
+  const ttl=Number.isInteger(body.ttl_sec)?Math.max(60,Math.min(body.ttl_sec,DEFAULT_COMMAND_TTL_SEC)):DEFAULT_COMMAND_TTL_SEC;
+  const item={command_id:commandId,installation_id:installationId,kind,created_at:nowSec(),expires_at:nowSec()+ttl,payload,signature};
+  try{
+    const outcome=await MAILBOX.enqueue("commands",item,{id:commandId,scope:installationId,maxPerScope:MAX_COMMANDS_PER_INSTALLATION,max:500000});
+    if(outcome==="duplicate")return res.status(200).json({ok:true,duplicate:true,command_id:commandId});
+    if(outcome==="full")return res.status(503).json({ok:false,error:"queue_full"});
+    if(outcome!=="accepted")throw new Error("unexpected_enqueue_result");
+    return res.status(202).json({ok:true,command_id:commandId});
+  }catch(err){console.error("RELAY_COMMAND_STORE_FAILED",err?.message);return res.status(503).json({ok:false,error:"relay_message_store_unavailable"});}
 });
 
-app.get("/v1/manager/commands", requireManager, (req, res) => {
-  purgeExpired();
-  const installationId = req.autsysManager.installation_id;
-  const available = commandsByInstallation.get(installationId) || [];
-  const list = req.autsysLicenseState.authorized ? available :
-    available.filter(command => PROVISIONAL_COMMAND_KINDS.has(command.kind));
-  return res.json({ ok: true, count: list.length, items: list });
+app.get("/v1/manager/commands", requireManager, async(req,res)=>{
+  const installationId=req.autsysManager.installation_id;
+  try{
+    const available=await MAILBOX.list("commands",{scope:installationId,limit:MAX_COMMANDS_PER_INSTALLATION});
+    const items=req.autsysLicenseState.authorized?available:available.filter(x=>PROVISIONAL_COMMAND_KINDS.has(x.kind));
+    return res.json({ok:true,count:items.length,items});
+  }catch(err){console.error("RELAY_COMMAND_READ_FAILED",err?.message);return res.status(503).json({ok:false,error:"relay_message_store_unavailable"});}
 });
 
-app.post("/v1/central/commands/ack", requireCentral, (req, res) => {
-  const ids = Array.isArray(req.body?.command_ids) ? req.body.command_ids.filter(isSafeId).slice(0, MAX_BATCH) : [];
-  if (ids.length === 0) return res.status(400).json({ ok: false, error: "invalid_command_ids" });
-  const wanted = new Set(ids);
-  let removed = 0;
-  for (const [installationId, list] of commandsByInstallation.entries()) {
-    const kept = [];
-    for (const item of list) {
-      if (wanted.has(item.command_id)) {
-        commandIds.delete(item.command_id);
-        removed += 1;
-      } else kept.push(item);
+app.post("/v1/central/commands/ack", requireCentral, async(req,res)=>{
+  const ids=Array.isArray(req.body?.command_ids)?req.body.command_ids.filter(isSafeId).slice(0,MAX_BATCH):[];
+  if(ids.length===0)return res.status(400).json({ok:false,error:"invalid_command_ids"});
+  try{const removed=await MAILBOX.ack("commands",ids);return res.json({ok:true,removed});}
+  catch(err){console.error("RELAY_COMMAND_ACK_FAILED",err?.message);return res.status(503).json({ok:false,error:"relay_message_store_unavailable"});}
+});
+
+
+// Centrale-only, strictly read-only inspection of durable Redis mailboxes.
+// Uses MAILBOX.list()'s read-only Lua script; never ACKs or purges messages.
+function relayReadOnlyInspectOptions(req) {
+  const installation=String(req.query.installation_id || "").trim();
+  const kind=String(req.query.kind || "").trim();
+  const requestedLimit=String(req.query.limit ?? "50");
+  const requestedOffset=String(req.query.offset ?? "0");
+  if ((installation && !isSafeId(installation)) || (kind && !isSafeId(kind)) ||
+      !/^\d{1,3}$/.test(requestedLimit) ||
+      !/^\d{1,5}$/.test(requestedOffset)) return null;
+  const limit=Number(requestedLimit),offset=Number(requestedOffset);
+  if (limit<1 || limit>100 || offset>1000) return null;
+  return {installation,kind,limit,offset};
+}
+async function relayReadOnlyInspect(req,res,collection) {
+  const opts=relayReadOnlyInspectOptions(req);
+  if (!opts) return res.status(400).json({ok:false,error:"invalid_inspection_filter"});
+  try {
+    const scanLimit=10000;
+    const data=await MAILBOX.list(collection,{
+      scope:opts.installation,limit:scanLimit
+    });
+    const matches=data.filter(item=>!opts.kind || item.kind===opts.kind);
+    const isEvents=collection==="events";
+    const metadata=matches.slice(opts.offset,opts.offset+opts.limit).map(item=>
+      isEvents?{
+        event_id:item.event_id,installation_id:item.installation_id,
+        kind:item.kind,ts:item.ts,received_at:item.received_at,expires_at:item.expires_at
+      }:{
+        command_id:item.command_id,installation_id:item.installation_id,
+        kind:item.kind,created_at:item.created_at,expires_at:item.expires_at
+      });
+    const globalCount=await MAILBOX.count(collection);
+    const capped=data.length>=scanLimit;
+    const nextOffset=opts.offset+metadata.length;
+    return res.json({
+      ok:true,source:collection,items:metadata,count:metadata.length,
+      total:matches.length,filtered_total:matches.length,filtered_total_is_lower_bound:capped,
+      global_pending_count:globalCount,next_offset:nextOffset<matches.length?nextOffset:null,
+      snapshot_at:nowSec(),read_only:true,ack_sent:false,ttl_purge_called:false,
+      payloads_included:false,signature_included:false
+    });
+  } catch(_err) {return res.status(503).json({ok:false,error:"redis_readonly_inspection_unavailable"});}
+}
+app.get("/v1/central/events/inspect",requireCentral,(req,res)=>
+  relayReadOnlyInspect(req,res,"events"));
+app.get("/v1/central/commands/inspect",requireCentral,(req,res)=>
+  relayReadOnlyInspect(req,res,"commands"));
+
+// Redis data-plane summary. Read-only SCAN, EXISTS, PTTL, STRLEN, TYPE and
+// ZCOUNT; no raw device ID, key name, inventory contents, secrets or payloads.
+app.get("/v1/central/redis/inspect",requireCentral,async(_req,res)=>{
+  try {
+    if(!MAILBOX_REDIS.isReady)throw new Error("durable_redis_not_ready");
+    const stateClient=MANAGER_BINDING_STORE
+      ?await MANAGER_BINDING_STORE.ready():MAILBOX_REDIS;
+    async function countMatching(client,glob) {
+      let count=0,capped=false;
+      for await(const page of client.scanIterator({MATCH:glob,COUNT:100})){
+        const part=Array.isArray(page)?page:[page];
+        count+=part.length;
+        if(count>=10000){count=10000;capped=true;break;}
+      }
+      return {count,capped};
     }
-    if (kept.length === 0) commandsByInstallation.delete(installationId);
-    else commandsByInstallation.set(installationId, kept);
+    const [bindings,mailboxKeys]=await Promise.all([
+      countMatching(stateClient,"autsys:manager-binding:v1:*"),
+      countMatching(MAILBOX_REDIS,"autsys:relay-mailbox:v1:*")
+    ]);
+    const inventory="autsys:central-relay:license-inventory:v1";
+    const exists=(await stateClient.exists(inventory))===1;
+    const info=exists?await Promise.all([
+      stateClient.type(inventory),stateClient.pTTL(inventory),
+      stateClient.strLen(inventory)
+    ]):["none",null,0];
+    async function pending(kind){
+      const key="autsys:relay-mailbox:v1:"+kind+":pending";
+      const typ=await MAILBOX_REDIS.type(key);
+      return {
+        present:typ!=="none",type:typ,
+        pending:typ==="zset"
+          ?await MAILBOX_REDIS.zCount(key,nowSec()+1,"+inf"):null
+      };
+    }
+    const [events,commands]=await Promise.all([
+      pending("events"),pending("commands")
+    ]);
+    return res.json({
+      ok:true,read_only:true,ack_sent:false,ttl_purge_called:false,purge_called:false,
+      raw_keys_returned:false,payloads_included:false,credentials_exposed:false,
+      redis:{
+        ready:true,
+        manager_binding_keys:bindings,
+        license_inventory:{present:exists,type:info[0],
+          ttl_ms:info[1],bytes:info[0]==="string"?info[2]:null},
+        relay_mailbox_keys:mailboxKeys,
+        durable_events:events,durable_commands:commands
+      },
+      current_transport:{mode:"redis_persistent",
+        events:await MAILBOX.count("events"),
+        commands:await MAILBOX.count("commands")}
+    });
+  }catch(_err){
+    return res.status(503).json({ok:false,error:"redis_readonly_inspection_unavailable"});
   }
-  return res.json({ ok: true, removed });
 });
 
-app.get("/diag", requireCentral, (req, res) => {
+app.get("/diag", requireCentral, async (req, res) => {
   purgeExpired();
-  let commandCount = 0;
-  for (const list of commandsByInstallation.values()) commandCount += list.length;
+  let eventCount, commandCount, installationsCount;
+  try { [eventCount,commandCount,installationsCount]=await Promise.all([MAILBOX.count("events"),MAILBOX.count("commands"),MAILBOX.countInstallations()]); }
+  catch { return res.status(503).json({ok:false,error:"relay_message_store_unavailable"}); }
   let cachedBytes = 0;
   for (const item of packagesByRelease.values()) cachedBytes += item.size_bytes;
   return res.json({
@@ -921,13 +1003,13 @@ app.get("/diag", requireCentral, (req, res) => {
     version: VERSION,
     protocol: PROTOCOL,
     ts: nowSec(),
-    manager_events_queued: events.length,
-    manager_installations_with_commands: commandsByInstallation.size,
+    manager_events_queued: eventCount,
+    manager_installations_with_commands: installationsCount,
     commands_queued: commandCount,
     package_cache_items: packagesByRelease.size,
     package_cache_bytes: cachedBytes,
     package_tickets: packageTickets.size,
-    persistence: MANAGER_BINDING_STORE ? "durable_key_value_binding_registry+ephemeral_transport" : "memory+ephemeral_package_files",
+    persistence: "durable_redis_messages+ephemeral_package_files",
     manager_binding_mode: MANAGER_BINDING_MODE,
     manager_license_enforcement: MANAGER_LICENSE_ENFORCEMENT,
     authoritative: false
@@ -944,6 +1026,7 @@ app.use((err, req, res, next) => {
 try {
   // Do not activate a new TOFU Relay without its durable registry online.
   if (MANAGER_BINDING_STORE) await MANAGER_BINDING_STORE.ready();
+  await MAILBOX_REDIS.connect();
   app.listen(port, () => {
     console.log(`AUTSYS Central Relay ${VERSION} listening on port ${port}`);
   });

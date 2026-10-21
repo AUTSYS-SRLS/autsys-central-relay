@@ -4,6 +4,8 @@ on:
     branches:
       - main
       - 'security/**'
+      - 'fix/**'
+      - 'staging/**'
   pull_request:
     branches:
       - main
@@ -23,6 +25,7 @@ jobs:
           --health-retries 10
     env:
       AUTSYS_TEST_REDIS_URL: redis://127.0.0.1:6379
+      AUTSYS_RELAY_MESSAGES_REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
