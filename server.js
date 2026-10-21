@@ -920,7 +920,7 @@ async function relayReadOnlyInspect(req,res,collection) {
     const nextOffset=opts.offset+metadata.length;
     return res.json({
       ok:true,source:collection,items:metadata,count:metadata.length,
-      filtered_total:matches.length,filtered_total_is_lower_bound:capped,
+      total:matches.length,filtered_total:matches.length,filtered_total_is_lower_bound:capped,
       global_pending_count:globalCount,next_offset:nextOffset<matches.length?nextOffset:null,
       snapshot_at:nowSec(),read_only:true,ack_sent:false,ttl_purge_called:false,
       payloads_included:false,signature_included:false
@@ -971,7 +971,7 @@ app.get("/v1/central/redis/inspect",requireCentral,async(_req,res)=>{
       pending("events"),pending("commands")
     ]);
     return res.json({
-      ok:true,read_only:true,ack_sent:false,ttl_purge_called:false,
+      ok:true,read_only:true,ack_sent:false,ttl_purge_called:false,purge_called:false,
       raw_keys_returned:false,payloads_included:false,credentials_exposed:false,
       redis:{
         ready:true,
