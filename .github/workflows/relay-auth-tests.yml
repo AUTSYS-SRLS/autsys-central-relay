@@ -5,6 +5,7 @@ on:
       - main
       - 'security/**'
       - 'fix/**'
+      - 'staging/**'
   pull_request:
     branches:
       - main
