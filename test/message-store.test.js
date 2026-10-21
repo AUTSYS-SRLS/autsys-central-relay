@@ -61,6 +61,8 @@ test("commands are isolated per installation and scope capacity is enforced",asy
   assert.deepEqual((await store.list("commands",{scope:"device-b"})).map(x=>x.command_id),["c"]);
   assert.equal(await store.ack("commands",["a"]),1);
   assert.equal(await store.enqueue("commands",item("b","device-a"),{id:"b",scope:"device-a",maxPerScope:1}),"accepted");
+  // Centrale legitimately regenerates an ACKed update assignment, using the same command ID.
+  assert.equal(await store.enqueue("commands",item("a","device-a"),{id:"a",scope:"device-a",maxPerScope:2}),"accepted");
  });
 });
 
@@ -80,5 +82,18 @@ test("Redis failure refuses acceptance instead of returning a false 202",async t
  await withStore(t,async(client,prefix)=>{
   const failingStore=createMessageStore({eval:async()=>{throw new Error("redis_unavailable");}},{prefix});
   await assert.rejects(()=>failingStore.enqueue("events",item("event-outage"),{id:"event-outage"}),/redis_unavailable/);
+ });
+});
+
+test("FIFO delivery is based on arrival, not TTL expiration order",async t=>{
+ await withStore(t,async(client,prefix)=>{
+  const store=createMessageStore(client,{prefix});
+  const first=item("first"),second=item("second"),third=item("third");
+  first.expires_at=Math.floor(Date.now()/1000)+3600;
+  second.expires_at=Math.floor(Date.now()/1000)+120;
+  third.expires_at=Math.floor(Date.now()/1000)+240;
+  for(const [id,x] of [["first",first],["second",second],["third",third]])
+   assert.equal(await store.enqueue("events",x,{id}),"accepted");
+  assert.deepEqual((await store.list("events")).map(x=>x.event_id),["first","second","third"]);
  });
 });
