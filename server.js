@@ -970,6 +970,62 @@ app.get("/v1/central/commands/inspect", requireCentral, (req, res) => {
   return relayInspectionResponse(req, res, commands, "commands");
 });
 
+
+// Read-only Redis metadata inspection. Authentication is the existing Centrale
+// bearer; exact AUTSYS prefixes are hard-coded. No Redis values, Manager secrets,
+// mailbox payloads, raw device IDs or arbitrary key expressions are returned.
+// This endpoint is NOT deployed while the live 0.3.1 transport has a queued command.
+app.get("/v1/central/redis/inspect", requireCentral, async (_req, res) => {
+  if (!MANAGER_BINDING_STORE)
+    return res.status(503).json({ok:false,error:"redis_binding_store_not_configured"});
+  try {
+    const client=await MANAGER_BINDING_STORE.ready();
+    async function countKeys(glob) {
+      const found=new Set();
+      let capped=false;
+      for await (const page of client.scanIterator({MATCH:glob,COUNT:100})) {
+        const keys=Array.isArray(page)?page:[page];
+        for(const key of keys) {
+          found.add(key);
+          if(found.size>=10000){capped=true;break;}
+        }
+        if(capped)break;
+      }
+      return {count:found.size,capped};
+    }
+    const binding=await countKeys("autsys:manager-binding:v1:*");
+    const mailbox=await countKeys("autsys:relay-mailbox:v1:*");
+    const inventoryKey="autsys:central-relay:license-inventory:v1";
+    const licensePresent=(await client.exists(inventoryKey))===1;
+    const licenseTtlMs=licensePresent?await client.pTTL(inventoryKey):null;
+    const licenseBytes=licensePresent?await client.strLen(inventoryKey):0;
+    const pending=async(kind)=>{
+      const key="autsys:relay-mailbox:v1:"+kind+":pending";
+      const actualType=await client.type(key);
+      if(actualType==="none")return {present:false,pending:null};
+      if(actualType!=="zset")return {present:true,pending:null,type:"unexpected"};
+      return {present:true,pending:await client.zCount(key,nowSec()+1,"+inf")};
+    };
+    const eventsMeta=await pending("events");
+    const commandsMeta=await pending("commands");
+    let inMemoryCommands=0;
+    for(const messages of commandsByInstallation.values())inMemoryCommands+=messages.length;
+    return res.json({
+      ok:true,read_only:true,ack_sent:false,purge_called:false,
+      payloads_included:false,raw_keys_returned:false,
+      credentials_exposed:false,
+      redis:{ready:true,manager_binding_keys:binding,
+        license_inventory:{present:licensePresent,ttl_ms:licenseTtlMs,bytes:licenseBytes},
+        relay_mailbox_keys:mailbox,
+        durable_events:eventsMeta,durable_commands:commandsMeta},
+      current_transport:{mode:"volatile_node_memory",events:events.length,commands:inMemoryCommands},
+      note:"A missing durable mailbox key does not mean the in-memory queue is empty."
+    });
+  } catch(_err) {
+    return res.status(503).json({ok:false,error:"redis_readonly_inspection_unavailable"});
+  }
+});
+
 app.get("/diag", requireCentral, (req, res) => {
   purgeExpired();
   let commandCount = 0;
