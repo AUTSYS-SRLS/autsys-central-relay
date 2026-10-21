@@ -8,12 +8,12 @@ local expires=tonumber(ARGV[3])
 local cap=tonumber(ARGV[4])
 local scope=ARGV[5]
 local body=ARGV[6]
-redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',now)
-local ids=redis.call('ZRANGE',KEYS[1],0,-1)
-for _,x in ipairs(ids) do
- local score=redis.call('ZSCORE',KEYS[1],x)
- if not score then redis.call('HDEL',KEYS[2],x) end
+local expired=redis.call('ZRANGEBYSCORE',KEYS[1],'-inf',now)
+for _,x in ipairs(expired) do
+ redis.call('ZREM',KEYS[1],x)
+ redis.call('HDEL',KEYS[2],x)
 end
+redis.call('ZREMRANGEBYSCORE',KEYS[3],'-inf',now)
 if redis.call('ZSCORE',KEYS[3],id) then
  if tonumber(redis.call('ZSCORE',KEYS[3],id))>now then return 'duplicate' end
  redis.call('ZREM',KEYS[3],id)
