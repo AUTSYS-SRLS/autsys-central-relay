@@ -47,7 +47,7 @@ test("Redis admin inspection uses only read calls and hides values and raw keys"
     });
     await client.set(bindingKey,bindingValue);
     await client.set(licenseKey,licenseValue);
-    await client.zAdd(pendingEventsKey,[{score:Math.floor(Date.now()/1000)+400,id:"synthetic-event"}]);
+    await client.zAdd(pendingEventsKey,[{score:Math.floor(Date.now()/1000)+400,value:"synthetic-event"}]);
     const before={
       binding:await client.get(bindingKey),license:await client.get(licenseKey),
       queued:await client.zCard(pendingEventsKey),licenseTtl:await client.pTTL(licenseKey)
