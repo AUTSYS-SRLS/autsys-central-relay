@@ -8,6 +8,7 @@ import path from "node:path";
 import { createClient } from "redis";
 import { createLicenseRegistry, validateLicenseInventory, managerLicenseState } from "../license-registry.js";
 
+const MESSAGE_PREFIX = `test:relay:license-registry.test:${process.pid}:${Date.now()}`;
 const UUID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const OTHER = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const LEGIT = "L".repeat(43);
@@ -85,7 +86,7 @@ if (!redisUrl) {
       stdio:"ignore",
       env:{...process.env,
       AUTSYS_RELAY_MESSAGES_REDIS_URL: process.env.AUTSYS_TEST_REDIS_URL,
-      AUTSYS_RELAY_MESSAGES_PREFIX: "test:relay:license-registry.test",PORT:String(port),
+      AUTSYS_RELAY_MESSAGES_PREFIX: MESSAGE_PREFIX,PORT:String(port),
         AUTSYS_CENTRAL_RELAY_KEY:CENTRAL,
         AUTSYS_MANAGER_TOKEN_KEY:MANAGER,
         AUTSYS_MANAGER_BINDING_MODE:"TOFU",

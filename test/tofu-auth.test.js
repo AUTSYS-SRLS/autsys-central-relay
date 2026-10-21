@@ -9,6 +9,7 @@ import path from "node:path";
 import { createClient } from "redis";
 import { createBindingStore } from "../manager-binding-store.js";
 
+const MESSAGE_PREFIX = `test:relay:tofu-auth.test:${process.pid}:${Date.now()}`;
 const url = process.env.AUTSYS_TEST_REDIS_URL;
 const prefix = "autsys:manager-binding:v1:";
 const IDs = [
@@ -72,7 +73,7 @@ if (!url) {
       env: {
         ...process.env,
       AUTSYS_RELAY_MESSAGES_REDIS_URL: process.env.AUTSYS_TEST_REDIS_URL,
-      AUTSYS_RELAY_MESSAGES_PREFIX: "test:relay:tofu-auth.test",
+      AUTSYS_RELAY_MESSAGES_PREFIX: MESSAGE_PREFIX,
         PORT: p,
         AUTSYS_CENTRAL_RELAY_KEY: CENTRAL,
         AUTSYS_MANAGER_TOKEN_KEY: TOKEN,

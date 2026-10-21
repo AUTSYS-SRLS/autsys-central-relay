@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { loadApprovedManagerBindings, isApprovedManagerBinding, isApprovedManagerSession } from '../manager-bindings.js';
 
+const MESSAGE_PREFIX = `test:relay:bootstrap-auth.test:${process.pid}:${Date.now()}`;
 const repo = path.dirname(fileURLToPath(new URL('../server.js', import.meta.url)));
 const ANDROID_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const WINDOWS_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -48,7 +49,7 @@ async function startRelay() {
     env: {
       ...process.env,
       AUTSYS_RELAY_MESSAGES_REDIS_URL: process.env.AUTSYS_TEST_REDIS_URL,
-      AUTSYS_RELAY_MESSAGES_PREFIX: "test:relay:bootstrap-auth.test",
+      AUTSYS_RELAY_MESSAGES_PREFIX: MESSAGE_PREFIX,
       PORT: String(port),
       AUTSYS_MANAGER_TOKEN_KEY: MANAGER_KEY,
       AUTSYS_CENTRAL_RELAY_KEY: CENTRAL_KEY,
