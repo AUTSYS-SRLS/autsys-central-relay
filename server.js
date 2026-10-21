@@ -909,6 +909,67 @@ app.post("/v1/central/commands/ack", requireCentral, (req, res) => {
   return res.json({ ok: true, removed });
 });
 
+
+// Metadata-only Centrale inspection. Deliberately does NOT call purgeExpired():
+// even expired rows are filtered in memory, without removing them or ACKing.
+// No payload, signature or Manager bearer token may appear in the response.
+function relayInspectionArgs(req) {
+  const installationId = String(req.query.installation_id || "").trim();
+  const kind = String(req.query.kind || "").trim();
+  const rawLimit = String(req.query.limit ?? "50");
+  const rawOffset = String(req.query.offset ?? "0");
+  if ((installationId && !isSafeId(installationId)) ||
+      (kind && !isSafeId(kind)) ||
+      !/^\d{1,3}$/.test(rawLimit) || !/^\d{1,6}$/.test(rawOffset))
+    return null;
+  const limit = Number(rawLimit), offset = Number(rawOffset);
+  if (limit < 1 || limit > 100 || offset > 100000) return null;
+  return { installationId, kind, limit, offset };
+}
+function relayInspectionResponse(req, res, source, kindLabel) {
+  const opts = relayInspectionArgs(req);
+  if (!opts) return res.status(400).json({ ok: false, error: "invalid_inspection_filter" });
+  const inspectedAt = nowSec();
+  const isEvents = kindLabel === "events";
+  const metadata = source
+    .filter(item => item.expires_at > inspectedAt &&
+      (!opts.installationId || item.installation_id === opts.installationId) &&
+      (!opts.kind || item.kind === opts.kind))
+    .map(item => isEvents ? {
+      event_id: item.event_id,
+      installation_id: item.installation_id,
+      kind: item.kind,
+      ts: item.ts,
+      received_at: item.received_at,
+      expires_at: item.expires_at
+    } : {
+      command_id: item.command_id,
+      installation_id: item.installation_id,
+      kind: item.kind,
+      created_at: item.created_at,
+      expires_at: item.expires_at
+    });
+  const idField = isEvents ? "event_id" : "command_id";
+  const timestampField = isEvents ? "received_at" : "created_at";
+  metadata.sort((a,b) => (a[timestampField] || 0) - (b[timestampField] || 0) ||
+    String(a[idField]).localeCompare(String(b[idField])));
+  const items = metadata.slice(opts.offset, opts.offset + opts.limit);
+  const nextOffset = opts.offset + items.length;
+  return res.json({
+    ok: true, source: kindLabel, count: items.length, total: metadata.length,
+    items, next_offset: nextOffset < metadata.length ? nextOffset : null,
+    snapshot_at: inspectedAt, read_only: true, payloads_included: false,
+    ack_sent: false, ttl_purge_called: false
+  });
+}
+app.get("/v1/central/events/inspect", requireCentral, (req, res) =>
+  relayInspectionResponse(req, res, events, "events"));
+app.get("/v1/central/commands/inspect", requireCentral, (req, res) => {
+  const commands = [];
+  for (const list of commandsByInstallation.values()) commands.push(...list);
+  return relayInspectionResponse(req, res, commands, "commands");
+});
+
 app.get("/diag", requireCentral, (req, res) => {
   purgeExpired();
   let commandCount = 0;
