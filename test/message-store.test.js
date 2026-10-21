@@ -78,8 +78,7 @@ test("expired messages disappear, and original IDs become reusable only after ex
 
 test("Redis failure refuses acceptance instead of returning a false 202",async t=>{
  await withStore(t,async(client,prefix)=>{
-  const store=createMessageStore(client,{prefix});
-  await client.quit();
-  await assert.rejects(()=>store.enqueue("events",item("event-outage"),{id:"event-outage"}));
+  const failingStore=createMessageStore({eval:async()=>{throw new Error("redis_unavailable");}},{prefix});
+  await assert.rejects(()=>failingStore.enqueue("events",item("event-outage"),{id:"event-outage"}),/redis_unavailable/);
  });
 });
