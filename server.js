@@ -909,6 +909,123 @@ app.post("/v1/central/commands/ack", requireCentral, (req, res) => {
   return res.json({ ok: true, removed });
 });
 
+
+// Metadata-only Centrale inspection. Deliberately does NOT call purgeExpired():
+// even expired rows are filtered in memory, without removing them or ACKing.
+// No payload, signature or Manager bearer token may appear in the response.
+function relayInspectionArgs(req) {
+  const installationId = String(req.query.installation_id || "").trim();
+  const kind = String(req.query.kind || "").trim();
+  const rawLimit = String(req.query.limit ?? "50");
+  const rawOffset = String(req.query.offset ?? "0");
+  if ((installationId && !isSafeId(installationId)) ||
+      (kind && !isSafeId(kind)) ||
+      !/^\d{1,3}$/.test(rawLimit) || !/^\d{1,6}$/.test(rawOffset))
+    return null;
+  const limit = Number(rawLimit), offset = Number(rawOffset);
+  if (limit < 1 || limit > 100 || offset > 100000) return null;
+  return { installationId, kind, limit, offset };
+}
+function relayInspectionResponse(req, res, source, kindLabel) {
+  const opts = relayInspectionArgs(req);
+  if (!opts) return res.status(400).json({ ok: false, error: "invalid_inspection_filter" });
+  const inspectedAt = nowSec();
+  const isEvents = kindLabel === "events";
+  const metadata = source
+    .filter(item => item.expires_at > inspectedAt &&
+      (!opts.installationId || item.installation_id === opts.installationId) &&
+      (!opts.kind || item.kind === opts.kind))
+    .map(item => isEvents ? {
+      event_id: item.event_id,
+      installation_id: item.installation_id,
+      kind: item.kind,
+      ts: item.ts,
+      received_at: item.received_at,
+      expires_at: item.expires_at
+    } : {
+      command_id: item.command_id,
+      installation_id: item.installation_id,
+      kind: item.kind,
+      created_at: item.created_at,
+      expires_at: item.expires_at
+    });
+  const idField = isEvents ? "event_id" : "command_id";
+  const timestampField = isEvents ? "received_at" : "created_at";
+  metadata.sort((a,b) => (a[timestampField] || 0) - (b[timestampField] || 0) ||
+    String(a[idField]).localeCompare(String(b[idField])));
+  const items = metadata.slice(opts.offset, opts.offset + opts.limit);
+  const nextOffset = opts.offset + items.length;
+  return res.json({
+    ok: true, source: kindLabel, count: items.length, total: metadata.length,
+    items, next_offset: nextOffset < metadata.length ? nextOffset : null,
+    snapshot_at: inspectedAt, read_only: true, payloads_included: false,
+    ack_sent: false, ttl_purge_called: false
+  });
+}
+app.get("/v1/central/events/inspect", requireCentral, (req, res) =>
+  relayInspectionResponse(req, res, events, "events"));
+app.get("/v1/central/commands/inspect", requireCentral, (req, res) => {
+  const commands = [];
+  for (const list of commandsByInstallation.values()) commands.push(...list);
+  return relayInspectionResponse(req, res, commands, "commands");
+});
+
+
+// Read-only Redis metadata inspection. Authentication is the existing Centrale
+// bearer; exact AUTSYS prefixes are hard-coded. No Redis values, Manager secrets,
+// mailbox payloads, raw device IDs or arbitrary key expressions are returned.
+// This endpoint is NOT deployed while the live 0.3.1 transport has a queued command.
+app.get("/v1/central/redis/inspect", requireCentral, async (_req, res) => {
+  if (!MANAGER_BINDING_STORE)
+    return res.status(503).json({ok:false,error:"redis_binding_store_not_configured"});
+  try {
+    const client=await MANAGER_BINDING_STORE.ready();
+    async function countKeys(glob) {
+      const found=new Set();
+      let capped=false;
+      for await (const page of client.scanIterator({MATCH:glob,COUNT:100})) {
+        const keys=Array.isArray(page)?page:[page];
+        for(const key of keys) {
+          found.add(key);
+          if(found.size>=10000){capped=true;break;}
+        }
+        if(capped)break;
+      }
+      return {count:found.size,capped};
+    }
+    const binding=await countKeys("autsys:manager-binding:v1:*");
+    const mailbox=await countKeys("autsys:relay-mailbox:v1:*");
+    const inventoryKey="autsys:central-relay:license-inventory:v1";
+    const licensePresent=(await client.exists(inventoryKey))===1;
+    const licenseTtlMs=licensePresent?await client.pTTL(inventoryKey):null;
+    const licenseBytes=licensePresent?await client.strLen(inventoryKey):0;
+    const pending=async(kind)=>{
+      const key="autsys:relay-mailbox:v1:"+kind+":pending";
+      const actualType=await client.type(key);
+      if(actualType==="none")return {present:false,pending:null};
+      if(actualType!=="zset")return {present:true,pending:null,type:"unexpected"};
+      return {present:true,pending:await client.zCount(key,nowSec()+1,"+inf")};
+    };
+    const eventsMeta=await pending("events");
+    const commandsMeta=await pending("commands");
+    let inMemoryCommands=0;
+    for(const messages of commandsByInstallation.values())inMemoryCommands+=messages.length;
+    return res.json({
+      ok:true,read_only:true,ack_sent:false,purge_called:false,
+      payloads_included:false,raw_keys_returned:false,
+      credentials_exposed:false,
+      redis:{ready:true,manager_binding_keys:binding,
+        license_inventory:{present:licensePresent,ttl_ms:licenseTtlMs,bytes:licenseBytes},
+        relay_mailbox_keys:mailbox,
+        durable_events:eventsMeta,durable_commands:commandsMeta},
+      current_transport:{mode:"volatile_node_memory",events:events.length,commands:inMemoryCommands},
+      note:"A missing durable mailbox key does not mean the in-memory queue is empty."
+    });
+  } catch(_err) {
+    return res.status(503).json({ok:false,error:"redis_readonly_inspection_unavailable"});
+  }
+});
+
 app.get("/diag", requireCentral, (req, res) => {
   purgeExpired();
   let commandCount = 0;
