@@ -884,8 +884,8 @@ app.post("/v1/central/commands/ack", requireCentral, async(req,res)=>{
 
 app.get("/diag", requireCentral, async (req, res) => {
   purgeExpired();
-  let eventCount, commandCount;
-  try { [eventCount,commandCount]=await Promise.all([MAILBOX.count("events"),MAILBOX.count("commands")]); }
+  let eventCount, commandCount, installationsCount;
+  try { [eventCount,commandCount,installationsCount]=await Promise.all([MAILBOX.count("events"),MAILBOX.count("commands"),MAILBOX.countInstallations()]); }
   catch { return res.status(503).json({ok:false,error:"relay_message_store_unavailable"}); }
   let cachedBytes = 0;
   for (const item of packagesByRelease.values()) cachedBytes += item.size_bytes;
@@ -896,7 +896,7 @@ app.get("/diag", requireCentral, async (req, res) => {
     protocol: PROTOCOL,
     ts: nowSec(),
     manager_events_queued: eventCount,
-    manager_installations_with_commands: null,
+    manager_installations_with_commands: installationsCount,
     commands_queued: commandCount,
     package_cache_items: packagesByRelease.size,
     package_cache_bytes: cachedBytes,
