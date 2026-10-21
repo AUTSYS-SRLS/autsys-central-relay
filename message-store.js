@@ -78,5 +78,30 @@ return result
  }
  async function ack(kind,ids){const k=keys(kind);return client.eval(ACK,{keys:[k.pending,k.body],arguments:ids});}
  async function count(kind){const k=keys(kind);return client.zCount(k.pending,Math.floor(Date.now()/1000)+1,"+inf");}
- return {enqueue,list,ack,count};
+ async function countInstallations(){
+  const k=keys("commands");
+  const lua=`
+local now=tonumber(ARGV[1])
+local ids=redis.call('ZRANGE',KEYS[1],0,-1)
+local seen={}
+local count=0
+for _,id in ipairs(ids) do
+ local exp=tonumber(redis.call('ZSCORE',KEYS[1],id) or '0')
+ if exp>now then
+  local raw=redis.call('HGET',KEYS[2],id)
+  if raw then
+   local ok,item=pcall(cjson.decode,raw)
+   if ok and type(item.installation_id)=='string' and not seen[item.installation_id] then
+    seen[item.installation_id]=true
+    count=count+1
+   end
+  end
+ end
+end
+return count
+`;
+  return client.eval(lua,{keys:[k.pending,k.body],arguments:[String(Math.floor(Date.now()/1000))]});
+ }
+
+ return {enqueue,list,ack,count,countInstallations};
 }
